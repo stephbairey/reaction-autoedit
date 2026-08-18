@@ -1,0 +1,25 @@
+# media & work products
+samples/
+work/
+*.mp4
+*.mkv
+*.mov
+*.wav
+*.mp3
+!templates/*.png
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

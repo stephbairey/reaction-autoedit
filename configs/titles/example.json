@@ -1,0 +1,11 @@
+{
+  "title": "Example Movie",
+  "year": 1999,
+  "studio": "Example Studios",
+  "runtime_target_min": 55.0,
+  "clip_cap_s": 7.0,
+  "withhold_climax": true,
+  "layout_min_s": 2.0,
+  "aspect_override": null,
+  "risk_flag": "unknown"
+}

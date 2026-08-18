@@ -1,0 +1,29 @@
+{
+  "name": "example",
+  "display_name": "the reactor",
+  "patreon_url": "https://www.patreon.com/yourname",
+  "voice_sample": "samples/sample-audio-longer.mp3",
+  "layout_template": null,
+  "pip": {
+    "corner": "bottom-right",
+    "width_frac": 0.24,
+    "margin_px": 24,
+    "border_px": 0,
+    "circle": null
+  },
+  "reactor_large": {
+    "face_height_frac": 0.92,
+    "background": "blur",
+    "blur_strength": 24,
+    "darken": 0.25,
+    "movie_pip": false,
+    "sharpen": 0.4,
+    "vignette": true
+  },
+  "branding": {
+    "endcard": "templates/endcard.png",
+    "lower_third": "templates/lower_third.png",
+    "endcard_duration": 8.0,
+    "lower_third_duration": 6.0
+  }
+}
