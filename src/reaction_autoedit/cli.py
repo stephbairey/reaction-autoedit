@@ -451,9 +451,44 @@ def speaker_check(
 
 
 @app.command()
-def select(name: str, root: Path = typer.Option(DEFAULT_ROOT)):
-    """Stage 3: two-budget selection → EDL. [M4]"""
-    _not_yet("Stage 3 (select)", "reaction_autoedit/select/")
+def select(
+    name: str,
+    runtime: Optional[float] = typer.Option(None, help="target runtime in minutes (default: title config, 55)"),
+    clip_cap: Optional[float] = typer.Option(None, help="max continuous movie footage in seconds (default: title config, 7)"),
+    withhold: Optional[bool] = typer.Option(None, help="withhold-the-climax (default: title config)"),
+    out: Optional[Path] = typer.Option(None, help="EDL path (default work/<name>/edl.json)"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Stage 3: two-budget selection (narrative spine + reaction peaks) → EDL."""
+    from .select.selector import Analysis, SelectParams, select as do_select
+
+    proj = Project.load(name, root)
+    tc = proj.title()
+    params = SelectParams(
+        runtime_target_s=(runtime or tc.runtime_target_min) * 60.0,
+        clip_cap_s=clip_cap or tc.clip_cap_s,
+        withhold_climax=tc.withhold_climax if withhold is None else withhold,
+        layout_min_s=tc.layout_min_s,
+    )
+    an = Analysis.load(proj.analysis_dir, proj.state.probe.duration)
+    if not an.peaks:
+        console.print("[yellow]no peaks.json — run `rae analyze` first (selection will be spine-only)[/]")
+    edl = do_select(an, params, source=str(proj.source), reactor=proj.reactor(), title=tc)
+    dest = out or proj.edl_path
+    edl.save(dest)
+    proj.mark("select", path=str(dest), duration=edl.duration, segments=len(edl.segments))
+    kinds = {}
+    for sgm in edl.segments:
+        kinds[sgm.kind] = kinds.get(sgm.kind, 0) + sgm.dur
+    console.print(f"[green]wrote[/] {dest}: {len(edl.segments)} segments, {edl.duration/60:.1f} min "
+                  f"(target {params.runtime_target_s/60:.0f}); film {an.film_start/60:.1f}→{an.film_end/60:.1f} min; "
+                  f"peaks used {edl.meta['peaks_used']}/{edl.meta['peaks_available']}, spine gap {edl.meta['spine_gap_s']}s, "
+                  f"withheld {edl.meta['withheld']}")
+    console.print("  by kind: " + ", ".join(f"{k} {v/60:.1f} min" for k, v in kinds.items()))
+    warns = edl.validate_rules(clip_cap_s=params.clip_cap_s, source_duration=proj.state.probe.duration)
+    for w in warns[:10]:
+        console.print(f"[yellow]warn:[/] {w}")
+    console.print(f"next: `rae render {name} --preview` (review), then `rae render {name}`")
 
 
 @app.command()
