@@ -88,6 +88,27 @@ uv run rae render demo --edl examples/edl_fixture.json --preview
 uv run pytest                             # unit + fixture-based integration tests (no real footage needed)
 ```
 
+### Stage 2: analysis (transcription + speaker attribution)
+
+```bash
+uv sync --extra analysis                       # faster-whisper, resemblyzer, librosa, scenedetect (+ torch)
+uv run rae analyze mymovie --range 1500-1800   # fast iteration on a 5-min slice (cached under analysis/r1500-1800/)
+uv run rae analyze mymovie                     # whole recording → analysis/transcript.json + speakers.json
+uv run rae transcript mymovie [--range …] [--speaker REACTOR]   # read the tagged transcript
+uv run rae speaker-check mymovie --holdout samples/other-clip.mp3  # does a held-out clip of him score as REACTOR?
+uv run rae speaker-review mymovie [--range …]  # audio contact sheets (reactor / borderline / film) to verify by ear
+```
+
+Speaker attribution needs a **clean voice sample** of the reactor (30–60 s, same mic ideally) set as
+`voice_sample` in the reactor config. The clean sample only *seeds* the tagger; the actual decision is
+made in-domain by clustering the recording's own voice windows (his voice inside the mix vs. every
+film voice), so it adapts per title. Windows are 1.6 s / hop 0.5 s; each transcript segment gets
+`REACTOR | FILM | MIXED | UNKNOWN`. Everything is CPU-capable; whisper `small` on a 90-min recording
+takes ~30–60 min on a laptop CPU, seconds per minute on a GPU.
+
+The analysis extra pulls in PyTorch (the default wheel is the CUDA build, which also runs on CPU).
+For a smaller CPU-only install: `UV_TORCH_BACKEND=cpu uv sync --extra analysis`.
+
 ## The EDL (cut list) format
 
 `work/<name>/edl.json` is the contract between selection (Stage 3) and assembly (Stage 4). It is
@@ -147,8 +168,8 @@ src/reaction_autoedit/
 
 ## Roadmap
 
-1. ✅ **M1** — Stage 1 layout detection + Stage 4/5 render from a hand-written EDL (this).
-2. **M2** — Stage 2 transcription + speaker attribution (resemblyzer first, pyannote optional); validate on real footage.
+1. ✅ **M1** — Stage 1 layout detection + Stage 4/5 render from a hand-written EDL.
+2. 🔄 **M2** — Stage 2 transcription + speaker attribution (resemblyzer + in-domain clustering; pyannote optional); validating on real footage.
 3. **M3** — reaction peaks, music tiering, scenes, dead air.
 4. **M4** — Stage 3 two-budget selection with clip cap and withhold-the-climax; `--review` / `--auto`.
 5. **M5** — Stage 0 preflight, Stage 6 outcome loop, optional Real-ESRGAN pass for `reactor-large`.

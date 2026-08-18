@@ -1,8 +1,8 @@
 """``rae`` — reaction-autoedit command line.
 
-Milestone 1 commands: probe, init, detect-layout, edl-init, edl-check, render, make-fixture,
-make-templates, compute. Later-stage commands (analyze, select, preflight, log-outcome) are stubs
-that document the intended interface.
+M1: probe, init, detect-layout, set-layout, edl-init, edl-check, render, make-fixture, make-templates, compute.
+M2: analyze (transcribe + speakers), transcript, speaker-check, speaker-review.
+Later-stage commands (select, preflight) are stubs that document the intended interface.
 """
 
 from __future__ import annotations
@@ -253,9 +253,138 @@ def _not_yet(stage: str, module: str):
 
 
 @app.command()
-def analyze(name: str, root: Path = typer.Option(DEFAULT_ROOT)):
-    """Stage 2: transcription, speaker attribution, reaction peaks, music, scenes, dead air. [M2]"""
-    _not_yet("Stage 2 (analyze)", "reaction_autoedit/analysis/")
+def analyze(
+    name: str,
+    only: str = typer.Option("transcribe,speakers", help="comma list of steps: transcribe,speakers"),
+    range_: Optional[str] = typer.Option(None, "--range", help="analyse only T0-T1 seconds (e.g. 1500-1800); cached separately"),
+    model: Optional[str] = typer.Option(None, help="whisper model (tiny/base/small/medium/large-v3); default from compute profile"),
+    voice: list[Path] = typer.Option([], help="extra voice sample(s) for enrolment"),
+    force: bool = typer.Option(False, help="recompute even if cached"),
+    no_gpu: bool = typer.Option(False, "--no-gpu"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Stage 2: transcription (faster-whisper) + speaker attribution (REACTOR vs FILM)."""
+    from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+
+    from .analysis import pipeline
+
+    proj = Project.load(name, root)
+    t0, t1 = _parse_range(range_)
+    steps = tuple(x.strip() for x in only.split(",") if x.strip())
+    bad = [x for x in steps if x not in pipeline.STEPS]
+    if bad:
+        raise typer.BadParameter(f"unknown step(s) {bad}; choose from {pipeline.STEPS}")
+    profile = compute.detect(prefer_gpu=not no_gpu)
+    with Progress(TextColumn("[bold]{task.description}"), BarColumn(), TextColumn("{task.fields[msg]}"), TimeElapsedColumn(), console=console) as prog:
+        task = prog.add_task("analyze", total=1.0, msg="")
+
+        def progress(frac: float, msg: str):
+            prog.update(task, completed=frac, msg=msg)
+
+        outs = pipeline.run(proj, steps=steps, t0=t0, t1=t1, force=force, model=model, profile=profile,
+                            voice=list(voice), log=lambda m: console.print(f"[dim]{m}[/]"), progress=progress)
+        prog.update(task, completed=1.0, msg="done")
+    for k, v in outs.items():
+        console.print(f"  {k}: {v}")
+    if "speakers" in outs:
+        _speaker_summary(outs["speakers"])
+
+
+def _parse_range(r: Optional[str]) -> tuple[Optional[float], Optional[float]]:
+    if not r:
+        return None, None
+    try:
+        a, b = r.split("-", 1)
+        return (float(a) if a else None), (float(b) if b else None)
+    except ValueError:
+        raise typer.BadParameter("--range must look like T0-T1 (seconds), e.g. 1500-1800")
+
+
+def _speaker_summary(path: Path):
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    c = d["counts"]
+    tot = max(1, sum(c.values()))
+    a = d.get("adaptation", {})
+    console.print(f"speakers: key={d.get('score_key','sim')} threshold={d['threshold']} margin={d['margin']}; "
+                  f"enrol sim p10={d['enrollment'].get('sim_p10')} median={d['enrollment'].get('sim_median')}")
+    if a:
+        console.print(f"  adaptation: {a}")
+    console.print("  " + "  ".join(f"{k}={v} ({100*v/tot:.0f}%)" for k, v in c.items())
+                  + f"  | reactor spans: {len(d['reactor_spans'])}")
+
+
+@app.command()
+def transcript(
+    name: str,
+    range_: Optional[str] = typer.Option(None, "--range", help="which cached range to show (default: full)"),
+    speaker: Optional[str] = typer.Option(None, help="filter: REACTOR | FILM | MIXED | UNKNOWN"),
+    limit: int = typer.Option(200),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Print the (speaker-tagged) transcript for review."""
+    from .analysis import pipeline
+
+    proj = Project.load(name, root)
+    t0, t1 = _parse_range(range_)
+    adir = pipeline.analysis_dir(proj, t0, t1)
+    sp, tp = adir / "speakers.json", adir / "transcript.json"
+    if sp.exists():
+        segs = json.loads(sp.read_text(encoding="utf-8"))["segments"]
+    elif tp.exists():
+        segs = [{**s, "speaker": "?", "sim_mean": None} for s in json.loads(tp.read_text(encoding="utf-8"))["segments"]]
+    else:
+        raise typer.BadParameter(f"nothing analysed in {adir} yet (run `rae analyze {name}`)")
+    colors = {"REACTOR": "green", "FILM": "cyan", "MIXED": "yellow", "UNKNOWN": "dim", "?": "white"}
+    n = 0
+    for s in segs:
+        if speaker and s["speaker"] != speaker.upper():
+            continue
+        m, sec = divmod(int(s["start"]), 60)
+        sim = f"{s['sim_mean']:.2f}" if s.get("sim_mean") is not None else "  - "
+        console.print(f"[{colors.get(s['speaker'], 'white')}]{m:3d}:{sec:02d} {s['speaker']:<7} {sim}[/] {s['text']}")
+        n += 1
+        if n >= limit:
+            console.print(f"[dim]… (limit {limit}; use --limit)[/]")
+            break
+
+
+@app.command("speaker-review")
+def speaker_review(
+    name: str,
+    range_: Optional[str] = typer.Option(None, "--range"),
+    per_class: int = typer.Option(12, help="clips per class"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Export audio contact sheets (reactor / borderline / film windows) to verify the tagger by ear."""
+    from .analysis import pipeline
+    from .analysis.speakers import export_review
+
+    proj = Project.load(name, root)
+    t0, t1 = _parse_range(range_)
+    adir = pipeline.analysis_dir(proj, t0, t1)
+    sp = adir / "speakers.json"
+    if not sp.exists():
+        raise typer.BadParameter(f"no speakers.json in {adir}")
+    outs = export_review(proj.analysis_dir / "audio16k.wav", sp, adir / "review", per_class=per_class)
+    for k, v in outs.items():
+        console.print(f"  {k}: {v}")
+    console.print("listen to each file; note the clip numbers that are wrong (see review_index.txt)")
+
+
+@app.command("speaker-check")
+def speaker_check(
+    name: str,
+    holdout: Path = typer.Option(..., help="a clean clip of the reactor NOT used for enrolment"),
+    voice: list[Path] = typer.Option([], help="extra enrolment sample(s)"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Sanity-check enrolment: does a held-out clip of the reactor score as REACTOR?"""
+    from .analysis import pipeline
+    from .analysis.speakers import self_check
+
+    proj = Project.load(name, root)
+    res = self_check(pipeline.voice_samples(proj, list(voice)), holdout, device=compute.detect().device)
+    console.print_json(json.dumps(res))
 
 
 @app.command()
