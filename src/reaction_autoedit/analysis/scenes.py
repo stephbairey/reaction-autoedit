@@ -1,7 +1,4 @@
-"""Scene boundaries on the movie region (PySceneDetect ContentDetector over the movie_inner crop). [M3]
-Output analysis/scenes.json: {"boundaries": [t, ...]}  — used for clean cut points and mid-roll placement.
-"""
+"""Scene boundaries on the movie region — see video_signals.py (computed in the same decode pass as
+face motion). ``Scenes`` is re-exported here for stage symmetry."""
 
-
-def detect_scenes(*args, **kwargs):  # pragma: no cover - M3
-    raise NotImplementedError("Stage 2 scene detection lands in Milestone 3")
+from .video_signals import Scenes, detect_cuts  # noqa: F401

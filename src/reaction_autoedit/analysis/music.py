@@ -1,13 +1,85 @@
-"""Music detection on the film audio (tiered risk). [M3]
+"""Music tiering from the AudioSet tags (see audio_tags.py).
 
-librosa features (spectral flatness, harmonic ratio, tempo stability, onset regularity) → music vs
-speech per 1 s window; smoothing; spans of music get ``kind = "song"`` when a vocal-presence
-heuristic fires (harmonic energy in the vocal band with pitch continuity while no REACTOR speech is
-tagged), else ``"score"``. Songs are the block-happy layer and are excluded by selection; score is
-minimised but allowed inside the clip cap.
-Output analysis/music.json: [{"t0": 100.0, "t1": 130.5, "kind": "song", "conf": 0.7}]
+Risk tiers (from the brief): label-owned *songs* (needle drops, vocals) are the block-happy layer →
+``kind = "song"``; orchestral *score* mostly yields revenue-share claims → ``kind = "score"``.
+
+Spans: windows with Music ≥ ``music_thr`` (smoothed over 3 windows) merged with gaps ≤ ``gap_s``.
+A span is a *song* when the max over its windows of the song classes (Singing, Vocal music, Pop,
+Rock, Hip hop, R&B, Country, Choir) ≥ ``song_thr``; otherwise *score*. ``level`` is the mean Music
+probability (how dominant the music is in the mix; selection avoids high-level spans harder).
+
+Output ``music.json``::
+
+    {"spans": [{"t0": 100.0, "t1": 130.5, "kind": "song", "level": 0.71, "song_conf": 0.42}]}
 """
 
+from __future__ import annotations
 
-def detect_music(*args, **kwargs):  # pragma: no cover - M3
-    raise NotImplementedError("Stage 2 music detection lands in Milestone 3")
+import json
+from pathlib import Path
+
+import numpy as np
+
+from .audio_tags import SONG_CLASSES, AudioTags
+
+
+def detect_music(tags_path: str | Path, out: str | Path, *, music_thr: float = 0.45, song_thr: float = 0.25,
+                 gap_s: float = 6.0, min_dur: float = 4.0, force: bool = False) -> Path:
+    out = Path(out)
+    if out.exists() and not force:
+        return out
+    tg = AudioTags(tags_path)
+    t = tg.t
+    music = tg.probs.get("Music", np.zeros(len(t), dtype=np.float32)).astype(np.float64)
+    if len(music) >= 3:
+        music = np.convolve(music, np.ones(3) / 3, mode="same")
+    song = tg.group_max(SONG_CLASSES, t).astype(np.float64)
+    on = music >= music_thr
+    spans: list[dict] = []
+    cur: dict | None = None
+    half = tg.hop_s / 2
+    for i, flag in enumerate(on):
+        if flag:
+            a, b = float(t[i] - half), float(t[i] + half)
+            if cur and a - cur["t1"] <= gap_s:
+                cur["t1"] = b
+                cur["idx"].append(i)
+            else:
+                cur = {"t0": a, "t1": b, "idx": [i]}
+                spans.append(cur)
+    result = []
+    for s in spans:
+        if s["t1"] - s["t0"] < min_dur:
+            continue
+        idx = np.array(s["idx"])
+        level = float(music[idx].mean())
+        sc = float(song[idx].max())
+        result.append({"t0": round(s["t0"], 2), "t1": round(s["t1"], 2), "kind": "song" if sc >= song_thr else "score",
+                       "level": round(level, 3), "song_conf": round(sc, 3)})
+    data = {"music_thr": music_thr, "song_thr": song_thr, "spans": result,
+            "totals": {"song_s": round(sum(r["t1"] - r["t0"] for r in result if r["kind"] == "song"), 1),
+                       "score_s": round(sum(r["t1"] - r["t0"] for r in result if r["kind"] == "score"), 1)}}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+    return out
+
+
+class MusicSpans:
+    def __init__(self, path: str | Path):
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.spans = d["spans"]
+
+    def kind_at(self, t: float) -> str | None:
+        for s in self.spans:
+            if s["t0"] <= t <= s["t1"]:
+                return s["kind"]
+        return None
+
+    def overlap(self, a: float, b: float) -> dict[str, float]:
+        """Seconds of song / score inside [a, b]."""
+        out = {"song": 0.0, "score": 0.0}
+        for s in self.spans:
+            o = min(b, s["t1"]) - max(a, s["t0"])
+            if o > 0:
+                out[s["kind"]] += o
+        return out

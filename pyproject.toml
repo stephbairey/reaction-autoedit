@@ -23,6 +23,7 @@ analysis = [
     "setuptools>=68,<82",  # webrtcvad (via resemblyzer) imports pkg_resources, removed in setuptools 82
     "speechbrain>=1.0",
     "torchaudio>=2.11.0",
+    "panns-inference>=0.1.1",
 ]
 # Optional LLM narrative-spine pass (Stage 3)
 llm = ["anthropic>=0.40"]

@@ -247,15 +247,9 @@ class EcapaTagger:
 
 
 def get_tagger(backend: str = "auto", device: str = "cpu") -> "ResemblyzerTagger | EcapaTagger":
-    if backend in ("auto", "ecapa"):
-        try:
-            return EcapaTagger(device=device)
-        except Exception as e:  # noqa: BLE001
-            if backend == "ecapa":
-                raise
-            import warnings
-
-            warnings.warn(f"ecapa backend unavailable ({e.__class__.__name__}); falling back to resemblyzer")
+    """``auto`` → resemblyzer (best on overlapped speech, our main case); ``ecapa`` opt-in."""
+    if backend == "ecapa":
+        return EcapaTagger(device=device)
     return ResemblyzerTagger(device=device)
 
 

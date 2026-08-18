@@ -255,7 +255,7 @@ def _not_yet(stage: str, module: str):
 @app.command()
 def analyze(
     name: str,
-    only: str = typer.Option("transcribe,facemotion,speakers", help="comma list of steps: transcribe,facemotion,speakers"),
+    only: str = typer.Option("transcribe,video,speakers,tags,music,peaks,deadair", help="comma list of steps: transcribe,video,speakers,tags,music,peaks,deadair"),
     range_: Optional[str] = typer.Option(None, "--range", help="analyse only T0-T1 seconds (e.g. 1500-1800); cached separately"),
     model: Optional[str] = typer.Option(None, help="whisper model (tiny/base/small/medium/large-v3); default from compute profile"),
     voice: list[Path] = typer.Option([], help="extra voice sample(s) for enrolment"),
@@ -266,7 +266,7 @@ def analyze(
     no_gpu: bool = typer.Option(False, "--no-gpu"),
     root: Path = typer.Option(DEFAULT_ROOT),
 ):
-    """Stage 2: transcription (faster-whisper) + face motion + speaker attribution (REACTOR vs FILM)."""
+    """Stage 2: transcribe, video signals, speaker attribution, audio tags, music tiering, peaks, dead air."""
     from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
     from .analysis import pipeline
@@ -274,6 +274,7 @@ def analyze(
     proj = Project.load(name, root)
     t0, t1 = _parse_range(range_)
     steps = tuple(x.strip() for x in only.split(",") if x.strip())
+    steps = tuple(pipeline.ALIASES.get(x, x) for x in steps)
     bad = [x for x in steps if x not in pipeline.STEPS]
     if bad:
         raise typer.BadParameter(f"unknown step(s) {bad}; choose from {pipeline.STEPS}")
@@ -350,6 +351,40 @@ def transcript(
         if n >= limit:
             console.print(f"[dim]… (limit {limit}; use --limit)[/]")
             break
+
+
+@app.command()
+def peaks(
+    name: str,
+    range_: Optional[str] = typer.Option(None, "--range"),
+    top: int = typer.Option(25, help="show the N highest peaks"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """List detected reaction peaks (plus music tiering + dead-air totals) for review."""
+    from .analysis import pipeline
+
+    proj = Project.load(name, root)
+    t0, t1 = _parse_range(range_)
+    adir = pipeline.analysis_dir(proj, t0, t1)
+    pk = adir / "peaks.json"
+    if not pk.exists():
+        raise typer.BadParameter(f"no peaks.json in {adir} (run `rae analyze {name}`)")
+    d = json.loads(pk.read_text(encoding="utf-8"))
+    ps = sorted(d["peaks"], key=lambda p: -p["score"])[:top]
+    t = Table(title=f"top {len(ps)} of {d['n']} peaks")
+    for c in ("time", "dur", "score", "kind", "reactor says"):
+        t.add_column(c)
+    for p in sorted(ps, key=lambda p: p["t"]):
+        m, s = divmod(int(p["t"]), 60)
+        t.add_row(f"{m}:{s:02d}", f"{p['t1']-p['t0']:.1f}s", f"{p['score']:.2f}", p["kind"], (p["text"] or "")[:70])
+    console.print(t)
+    mu, da = adir / "music.json", adir / "deadair.json"
+    if mu.exists():
+        m = json.loads(mu.read_text(encoding="utf-8"))
+        console.print(f"music: {len(m['spans'])} spans — song {m['totals']['song_s']/60:.1f} min, score {m['totals']['score_s']/60:.1f} min")
+    if da.exists():
+        dd = json.loads(da.read_text(encoding="utf-8"))
+        console.print(f"dead air: {len(dd['spans'])} spans, {dd['total_s']/60:.1f} min total")
 
 
 @app.command("speaker-review")

@@ -88,7 +88,7 @@ uv run rae render demo --edl examples/edl_fixture.json --preview
 uv run pytest                             # unit + fixture-based integration tests (no real footage needed)
 ```
 
-### Stage 2: analysis (transcription + speaker attribution)
+### Stage 2: analysis (transcription, speaker attribution, video signals, audio tags, music, peaks, dead air)
 
 ```bash
 uv sync --extra analysis                       # faster-whisper, resemblyzer, librosa, scenedetect (+ torch)
@@ -97,7 +97,13 @@ uv run rae analyze mymovie                     # whole recording → analysis/tr
 uv run rae transcript mymovie [--range …] [--speaker REACTOR]   # read the tagged transcript
 uv run rae speaker-check mymovie --holdout samples/other-clip.mp3  # does a held-out clip of him score as REACTOR?
 uv run rae speaker-review mymovie [--range …]  # audio contact sheets (reactor / borderline / film) to verify by ear
+uv run rae peaks mymovie [--range …]           # top reaction peaks + music tiering + dead-air totals
 ```
+
+Steps (`--only a,b,c`; each writes one cached JSON in `work/<name>/analysis/`):
+`transcribe` (faster-whisper) → `video` (one 5-fps decode: face-motion + movie scene cuts) → `speakers`
+(REACTOR/FILM) → `tags` (PANNs AudioSet: music, singing, laughter, shout, gasp …) → `music` (song vs score
+spans) → `peaks` (reaction peaks from reactor vocal energy + face motion + laugh/shout/gasp tags) → `deadair`.
 
 Speaker attribution needs a **clean voice sample** of the reactor (30–60 s, same mic ideally) set as
 `voice_sample` in the reactor config. The clean sample only *seeds* the tagger; the actual decision is
@@ -175,7 +181,7 @@ src/reaction_autoedit/
 ## Roadmap
 
 1. ✅ **M1** — Stage 1 layout detection + Stage 4/5 render from a hand-written EDL.
-2. 🔄 **M2** — Stage 2 transcription + speaker attribution (resemblyzer + in-domain clustering; pyannote optional); validating on real footage.
-3. **M3** — reaction peaks, music tiering, scenes, dead air.
+2. ✅ **M2** — Stage 2 transcription + speaker attribution (resemblyzer + local in-domain clustering; ECAPA optional), validated on 88 human-labelled windows.
+3. 🔄 **M3** — reaction peaks, music tiering (PANNs), scene cuts, dead air — implemented; validating.
 4. **M4** — Stage 3 two-budget selection with clip cap and withhold-the-climax; `--review` / `--auto`.
 5. **M5** — Stage 0 preflight, Stage 6 outcome loop, optional Real-ESRGAN pass for `reactor-large`.
