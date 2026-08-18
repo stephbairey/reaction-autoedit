@@ -46,6 +46,8 @@ def run(
     model: str | None = None,
     profile: ComputeProfile | None = None,
     voice: list[Path] | None = None,
+    backend: str = "auto",
+    fusion_weight: float = 0.0,
     log: Callable[[str], None] = print,
     progress: Callable[[float, str], None] | None = None,
 ) -> dict[str, Path]:
@@ -99,7 +101,7 @@ def run(
             log(f"speakers cached: {sp}")
         else:
             samples = voice_samples(proj, voice)
-            log(f"speaker attribution (resemblyzer, enrol from {[s.name for s in samples]}) …")
+            log(f"speaker attribution (backend={backend}, enrol from {[s.name for s in samples]}) …")
             fm_path = adir / "face_motion.json"
             if not fm_path.exists() and (proj.analysis_dir / "face_motion.json").exists():
                 fm_path = proj.analysis_dir / "face_motion.json"      # full-track motion covers any range
@@ -107,7 +109,8 @@ def run(
             if fm is None:
                 log("  (no face_motion.json — audio-only scoring; run the facemotion step for better accuracy)")
             run_speakers(wav, transcript, sp, sample_paths=samples, t0=t0, t1=t1,
-                         device=profile.device, force=force, face_motion=fm, progress=progress)
+                         device=profile.device, force=force, face_motion=fm, backend=backend,
+                         fusion_weight=fusion_weight, labels_path=proj.analysis_dir / "labels.json", progress=progress)
         out["speakers"] = sp
         proj.mark("speakers", path=str(sp), range=[t0, t1])
     return out

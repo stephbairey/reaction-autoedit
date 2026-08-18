@@ -106,6 +106,12 @@ film voice), so it adapts per title. Windows are 1.6 s / hop 0.5 s; each transcr
 `REACTOR | FILM | MIXED | UNKNOWN`. Everything is CPU-capable; whisper `small` on a 90-min recording
 takes ~30–60 min on a laptop CPU, seconds per minute on a GPU.
 
+Backends: `--backend resemblyzer` (default; degrades gracefully when he talks *over* film audio) or
+`--backend ecapa` (SpeechBrain ECAPA-TDNN; sharper on clean recordings, but collapses on overlapped speech).
+Threshold: if `work/<name>/analysis/labels.json` exists (built from your annotated `speaker-review` picks) the
+threshold is calibrated to it (precision-weighted); otherwise an unsupervised default. `rae speaker-eval` reports
+AUC / precision / recall against those labels.
+
 The analysis extra pulls in PyTorch (the default wheel is the CUDA build, which also runs on CPU).
 For a smaller CPU-only install: `UV_TORCH_BACKEND=cpu uv sync --extra analysis`.
 

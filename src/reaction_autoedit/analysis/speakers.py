@@ -161,6 +161,104 @@ class ResemblyzerTagger:
         return e
 
 
+class EcapaTagger:
+    """SpeechBrain ECAPA-TDNN speaker embeddings (spkrec-ecapa-voxceleb, 192-d). Stronger speaker
+    discrimination than resemblyzer (better at separating him from similar adult male film voices),
+    slower on CPU (~0.2 s per 1.6 s window). Model weights are downloaded once from the HF hub
+    (public, no token) into ``work/_models/ecapa``."""
+
+    name = "ecapa"
+    MODEL = "speechbrain/spkrec-ecapa-voxceleb"
+
+    def __init__(self, device: str = "cpu", cache_dir: str | Path = "work/_models/ecapa"):
+        import torch
+        from speechbrain.inference.speaker import EncoderClassifier  # heavy import
+
+        self._torch = torch
+        self._enc = EncoderClassifier.from_hparams(source=self.MODEL, savedir=str(cache_dir), run_opts={"device": device})
+        self._device = device
+
+    def _embed(self, frames: np.ndarray) -> np.ndarray:
+        """frames: (n, samples) float32 @16k → (n, 192) unit vectors."""
+        torch = self._torch
+        out = []
+        with torch.no_grad():
+            for i in range(0, len(frames), 64):
+                x = torch.from_numpy(np.ascontiguousarray(frames[i:i + 64])).to(self._device)
+                e = self._enc.encode_batch(x).squeeze(1).cpu().numpy()
+                out.append(e)
+        E = np.concatenate(out, axis=0).astype(np.float32)
+        E /= np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
+        return E
+
+    def enroll(self, sample_paths: list[Path]) -> Enrollment:
+        from .audio import SR as _SR
+
+        wavs = []
+        for p in sample_paths:
+            import librosa
+
+            y, _ = librosa.load(str(p), sr=_SR, mono=True)
+            wavs.append(y.astype(np.float32))
+        win, hop = int(WIN_S * SR), int(0.8 * SR)
+        frames = []
+        for y in wavs:
+            for st in range(0, max(1, len(y) - win + 1), hop):
+                f = y[st:st + win]
+                if len(f) == win and rms_db(f) > SILENCE_DB:
+                    frames.append(f)
+        if not frames:
+            raise RuntimeError("voice sample has no voiced 1.6 s windows")
+        E = self._embed(np.stack(frames))
+        ref = E.mean(axis=0)
+        ref /= np.linalg.norm(ref) + 1e-9
+        sims = E @ ref
+        e = Enrollment(embedding=ref, sims=sims, sample=";".join(str(p) for p in sample_paths))
+        e.threshold = float(np.clip(np.percentile(sims, 10) - 0.15, 0.35, 0.8))
+        return e
+
+    def timeline(self, wav: np.ndarray, sr: int, offset: float, enrol: Enrollment,
+                 progress: Callable[[float, str], None] | None = None) -> list[dict]:
+        return self.timeline_with_embeddings(wav, sr, offset, enrol, progress)[0]
+
+    def timeline_with_embeddings(self, wav: np.ndarray, sr: int, offset: float, enrol: Enrollment,
+                                 progress: Callable[[float, str], None] | None = None) -> tuple[list[dict], np.ndarray]:
+        assert sr == SR
+        win, hop = int(WIN_S * sr), int(HOP_S * sr)
+        n = len(wav)
+        starts = np.arange(0, max(0, n - win + 1), hop)
+        out: list[dict] = []
+        E = np.full((len(starts), 192), np.nan, dtype=np.float32)
+        dbs = np.array([rms_db(wav[s:s + win]) for s in starts])
+        voiced = np.where(dbs > SILENCE_DB)[0]
+        B = 512
+        for i in range(0, len(voiced), B):
+            idx = voiced[i:i + B]
+            frames = np.stack([wav[s:s + win] for s in starts[idx]]).astype(np.float32)
+            E[idx] = self._embed(frames)
+            if progress:
+                done = min(len(voiced), i + B)
+                progress(done / max(1, len(voiced)), f"{done}/{len(voiced)} voiced windows embedded (ecapa)")
+        sims = np.where(np.isnan(E[:, 0]), np.nan, E @ enrol.embedding)
+        for s, d, sm in zip(starts, dbs, sims):
+            t = offset + (s + win / 2) / sr
+            out.append({"t": round(float(t), 2), "sim": None if np.isnan(sm) else round(float(sm), 3), "db": round(float(d), 1)})
+        return out, E
+
+
+def get_tagger(backend: str = "auto", device: str = "cpu") -> "ResemblyzerTagger | EcapaTagger":
+    if backend in ("auto", "ecapa"):
+        try:
+            return EcapaTagger(device=device)
+        except Exception as e:  # noqa: BLE001
+            if backend == "ecapa":
+                raise
+            import warnings
+
+            warnings.warn(f"ecapa backend unavailable ({e.__class__.__name__}); falling back to resemblyzer")
+    return ResemblyzerTagger(device=device)
+
+
 # ---- in-domain adaptation ----------------------------------------------------------------------
 def _spherical_kmeans(X: np.ndarray, k: int, iters: int = 25, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """k-means on unit vectors (cosine). Returns (labels, centroids). Deterministic k-means++ init."""
@@ -208,14 +306,16 @@ def adapt(timeline: list[dict], E: np.ndarray, enrol: Enrollment, k: int | None 
     csim = C @ enrol.embedding                       # each cluster's similarity to the clean voice
     order = np.argsort(-csim)
     top = float(csim[order[0]])
-    reactor_clusters = [int(j) for j in order if csim[j] >= top - 0.03]
+    enrol_med = float(np.median(enrol.sims)) if enrol.sims.size else 0.8
+    margin = 0.03 * (enrol_med / 0.84)         # margins were tuned on resemblyzer's scale (~0.84 median)
+    reactor_clusters = [int(j) for j in order if csim[j] >= top - margin]
     film_clusters = [j for j in range(len(C)) if j not in reactor_clusters]
     info: dict = {"adapted": True, "k": int(len(C)), "voiced_windows": nv,
                   "cluster_sims": [round(float(v), 3) for v in csim[order][:8]],
                   "reactor_clusters": reactor_clusters,
                   "reactor_windows": int(np.isin(labels, reactor_clusters).sum())}
-    if not film_clusters or top < 0.5:
-        info.update(adapted=False, reason="no separable reactor cluster")
+    if not film_clusters or top < 0.55 * enrol_med:
+        info.update(adapted=False, reason=f"no separable reactor cluster (top {top:.2f} vs enrol median {enrol_med:.2f})")
         for w in timeline:
             w["score"] = None if w["sim"] is None else round(w["sim"] - 0.5, 3)
         return timeline, info
@@ -246,10 +346,7 @@ def fuse_motion(timeline: list[dict], motion: np.ndarray, weight: float = 0.5) -
     zs = (sc - np.nanmean(sc[ok])) / (np.nanstd(sc[ok]) + 1e-9)
     mo_ok = ok & ~np.isnan(mo)
     if mo_ok.sum() >= 10:
-        # robust z for motion (heavy right tail): median / MAD, clipped
-        med = np.nanmedian(mo[mo_ok])
-        mad = np.nanmedian(np.abs(mo[mo_ok] - med)) * 1.4826 + 1e-6
-        zm = np.clip((mo - med) / mad, -3, 3)
+        zm = np.clip((mo - np.nanmean(mo[mo_ok])) / (np.nanstd(mo[mo_ok]) + 1e-6), -2, 2)
     else:
         zm = np.zeros_like(mo)
     fused = zs + weight * np.where(np.isnan(zm), 0.0, zm)
@@ -274,6 +371,39 @@ def _otsu(x: np.ndarray, bins: int = 64) -> float:
         if v > best_v:
             best_v, best_t = v, float(edges[k])
     return best_t
+
+
+# ---- threshold selection --------------------------------------------------------------------
+def choose_threshold(timeline: list[dict], key: str, labels_path: Path | None = None) -> tuple[float, str]:
+    """Threshold on ``key``. With human labels (from annotated review picks) pick the value that
+    maximises F0.5 (precision-weighted) over the labelled windows; otherwise Otsu, and for the audio
+    contrast score clipped to [-0.10, 0.0] (Otsu alone tends to sit too low on long tracks)."""
+    vals_all = np.array([w[key] for w in timeline if w.get(key) is not None], dtype=float)
+    if vals_all.size == 0:
+        return 0.0, "none"
+    otsu = float(_otsu(vals_all))
+    default = float(np.clip(otsu, -0.10, 0.0)) if key == "score" else otsu
+    if labels_path is None or not Path(labels_path).exists():
+        return default, "otsu" if default == otsu else "otsu-clipped"
+    labs = [l for l in json.loads(Path(labels_path).read_text(encoding="utf-8")).get("labels", []) if l.get("speaker") in ("REACTOR", "FILM")]
+    ts = np.array([w["t"] for w in timeline])
+    xs, ys = [], []
+    for l in labs:
+        i = int(np.argmin(np.abs(ts - l["t"])))
+        if abs(ts[i] - l["t"]) <= 1.0 and timeline[i].get(key) is not None:
+            xs.append(timeline[i][key]); ys.append(l["speaker"] == "REACTOR")
+    x, y = np.array(xs, dtype=float), np.array(ys, dtype=bool)
+    if y.sum() < 4 or (~y).sum() < 4:
+        return default, "otsu (too few labels in range)"
+    best_t, best_f = default, -1.0
+    for c in np.unique(x):
+        pred = x >= c
+        tp, fp, fn = (pred & y).sum(), (pred & ~y).sum(), (~pred & y).sum()
+        prec = tp / max(1, tp + fp); rec = tp / max(1, tp + fn)
+        f = (1.25 * prec * rec / (0.25 * prec + rec)) if (prec + rec) else 0.0
+        if f > best_f:
+            best_f, best_t = f, float(c)
+    return best_t, f"labels (n={len(y)}, F0.5={best_f:.2f})"
 
 
 # ---- calibration + labelling (backend-independent) --------------------------------------------
@@ -375,11 +505,14 @@ def run_speakers(
     device: str = "cpu",
     force: bool = False,
     face_motion: "FaceMotion | None" = None,
+    backend: str = "auto",
+    fusion_weight: float = 0.0,
+    labels_path: Path | None = None,
     progress: Callable[[float, str], None] | None = None,
 ) -> Path:
     if out.exists() and not force:
         return out
-    tagger = ResemblyzerTagger(device=device)
+    tagger = get_tagger(backend, device=device)
     enrol = tagger.enroll(sample_paths)
     wav, sr = load_wav(wav_path, t0, t1)
     tl, E = tagger.timeline_with_embeddings(wav, sr, t0 or 0.0, enrol, progress=progress)
@@ -392,13 +525,14 @@ def run_speakers(
         key = "score"
         if face_motion is not None:
             centres = np.array([w["t"] for w in tl])
-            if face_motion.covers(float(centres[0]), float(centres[-1])):
-                tl = fuse_motion(tl, face_motion.per_window(centres))
+            if fusion_weight > 0 and face_motion.covers(float(centres[0]), float(centres[-1])):
+                tl = fuse_motion(tl, face_motion.per_window(centres), weight=fusion_weight)
                 key = "fused"
-                fusion = {"used": True, "weight": 0.5}
+                fusion = {"used": True, "weight": fusion_weight}
         vals = np.array([w[key] for w in tl if w.get(key) is not None])
-        thr = float(_otsu(vals))
+        thr, thr_src = choose_threshold(tl, key, labels_path)
         margin = float(0.15 * vals.std()) if vals.size else 0.02
+        fusion["threshold_source"] = thr_src
     else:
         thr, margin, key = enrol.threshold, enrol.margin, "sim"
     segs = label_segments(transcript["segments"], tl, thr, margin, key=key)
@@ -407,6 +541,7 @@ def run_speakers(
             "raw_threshold": round(enrol.threshold, 3),
             "window_s": WIN_S, "hop_s": HOP_S, "silence_db": SILENCE_DB,
             "enrollment": enrol.stats(), "adaptation": ainfo, "fusion": fusion,
+            "threshold_source": fusion.get("threshold_source", "otsu"),
             "range": [t0, t1] if (t0 is not None or t1 is not None) else None,
             "counts": counts, "reactor_spans": reactor_spans(tl, thr, key=key),
             "timeline": tl, "segments": segs}
@@ -415,17 +550,17 @@ def run_speakers(
     return out
 
 
-def self_check(sample_paths: list[Path], holdout: Path, device: str = "cpu") -> dict:
+def self_check(sample_paths: list[Path], holdout: Path, device: str = "cpu", backend: str = "auto") -> dict:
     """Enrol on ``sample_paths`` and score a held-out clip of the same speaker: what fraction of its
     voiced windows would be called REACTOR at the provisional threshold?"""
-    from resemblyzer import preprocess_wav
+    import librosa
 
-    tagger = ResemblyzerTagger(device=device)
+    tagger = get_tagger(backend, device=device)
     enrol = tagger.enroll(sample_paths)
-    wav = preprocess_wav(str(holdout))
+    wav, _ = librosa.load(str(holdout), sr=SR, mono=True)
     tl = tagger.timeline(wav.astype(np.float32), SR, 0.0, enrol)
     sims = np.array([w["sim"] for w in tl if w["sim"] is not None])
-    return {"threshold": round(enrol.threshold, 3), "n_windows": int(sims.size),
+    return {"backend": tagger.name, "threshold": round(enrol.threshold, 3), "n_windows": int(sims.size),
             "holdout_sim_median": round(float(np.median(sims)), 3) if sims.size else None,
             "holdout_sim_p10": round(float(np.percentile(sims, 10)), 3) if sims.size else None,
             "frac_reactor": round(float((sims >= enrol.threshold).mean()), 3) if sims.size else None,

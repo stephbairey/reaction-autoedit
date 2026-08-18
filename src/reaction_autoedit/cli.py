@@ -259,11 +259,13 @@ def analyze(
     range_: Optional[str] = typer.Option(None, "--range", help="analyse only T0-T1 seconds (e.g. 1500-1800); cached separately"),
     model: Optional[str] = typer.Option(None, help="whisper model (tiny/base/small/medium/large-v3); default from compute profile"),
     voice: list[Path] = typer.Option([], help="extra voice sample(s) for enrolment"),
+    backend: str = typer.Option("auto", help="speaker backend: auto | ecapa | resemblyzer"),
+    fusion: float = typer.Option(0.0, help="face-motion fusion weight (0 = audio only; motion still computed for peaks)"),
     force: bool = typer.Option(False, help="recompute even if cached"),
     no_gpu: bool = typer.Option(False, "--no-gpu"),
     root: Path = typer.Option(DEFAULT_ROOT),
 ):
-    """Stage 2: transcription (faster-whisper) + speaker attribution (REACTOR vs FILM)."""
+    """Stage 2: transcription (faster-whisper) + face motion + speaker attribution (REACTOR vs FILM)."""
     from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
     from .analysis import pipeline
@@ -282,7 +284,8 @@ def analyze(
             prog.update(task, completed=frac, msg=msg)
 
         outs = pipeline.run(proj, steps=steps, t0=t0, t1=t1, force=force, model=model, profile=profile,
-                            voice=list(voice), log=lambda m: console.print(f"[dim]{m}[/]"), progress=progress)
+                            voice=list(voice), backend=backend, fusion_weight=fusion,
+                            log=lambda m: console.print(f"[dim]{m}[/]"), progress=progress)
         prog.update(task, completed=1.0, msg="done")
     for k, v in outs.items():
         console.print(f"  {k}: {v}")
@@ -305,7 +308,7 @@ def _speaker_summary(path: Path):
     c = d["counts"]
     tot = max(1, sum(c.values()))
     a = d.get("adaptation", {})
-    console.print(f"speakers: key={d.get('score_key','sim')} threshold={d['threshold']} margin={d['margin']}; "
+    console.print(f"speakers[{d.get('backend')}]: key={d.get('score_key','sim')} threshold={d['threshold']} ({d.get('threshold_source','')}) margin={d['margin']}; "
                   f"enrol sim p10={d['enrollment'].get('sim_p10')} median={d['enrollment'].get('sim_median')}")
     if a:
         console.print(f"  adaptation: {a}")
