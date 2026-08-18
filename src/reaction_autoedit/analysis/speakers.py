@@ -13,6 +13,8 @@ Backend v1: **resemblyzer** speaker embeddings (pip-only, CPU-friendly).
     ``score = cos(e, reactor) - cos(e, film)`` (his voice inside the mix vs. the film's mix). The
     threshold is Otsu's split of that score histogram; a drift guard keeps the reactor centroid
     anchored to the clean enrolment
+  * **audio-visual fusion** (when ``face_motion.json`` exists): z(score) + 0.5·z(mouth-region motion)
+    — his mouth moves when he talks; on labelled data this lifts AUC noticeably
   * every transcript segment is labelled from the windows it overlaps:
       REACTOR (≥60 % windows above threshold) | FILM (≤15 %) | MIXED (in between) | UNKNOWN (silent)
 
@@ -37,6 +39,7 @@ from typing import Callable, Protocol
 import numpy as np
 
 from .audio import SR, load_wav, rms_db
+from .face_motion import FaceMotion
 
 WIN_S = 1.6
 HOP_S = 0.5
@@ -200,12 +203,12 @@ def adapt(timeline: list[dict], E: np.ndarray, enrol: Enrollment, k: int | None 
             w["score"] = None if w["sim"] is None else round(w["sim"] - 0.5, 3)
         return timeline, {"adapted": False, "reason": "too few voiced windows"}
     Ev = E[valid]
-    k = k or int(np.clip(nv // 40, 8, 40))
+    k = k or int(np.clip(nv // 20, 12, 48))
     labels, C = _spherical_kmeans(Ev, k)
     csim = C @ enrol.embedding                       # each cluster's similarity to the clean voice
     order = np.argsort(-csim)
     top = float(csim[order[0]])
-    reactor_clusters = [int(j) for j in order if csim[j] >= top - 0.05]
+    reactor_clusters = [int(j) for j in order if csim[j] >= top - 0.03]
     film_clusters = [j for j in range(len(C)) if j not in reactor_clusters]
     info: dict = {"adapted": True, "k": int(len(C)), "voiced_windows": nv,
                   "cluster_sims": [round(float(v), 3) for v in csim[order][:8]],
@@ -228,6 +231,32 @@ def adapt(timeline: list[dict], E: np.ndarray, enrol: Enrollment, k: int | None 
         else:
             w["score"] = None
     return timeline, info
+
+
+def fuse_motion(timeline: list[dict], motion: np.ndarray, weight: float = 0.5) -> list[dict]:
+    """Audio-visual fusion: fused = z(score) + weight * z(face motion). Windows without motion data
+    keep their audio score. Adds ``motion`` and ``fused`` to each timeline entry."""
+    sc = np.array([np.nan if w.get("score") is None else w["score"] for w in timeline], dtype=np.float64)
+    mo = np.asarray(motion, dtype=np.float64)
+    ok = ~np.isnan(sc)
+    if ok.sum() < 10:
+        for w in timeline:
+            w["fused"] = w.get("score")
+        return timeline
+    zs = (sc - np.nanmean(sc[ok])) / (np.nanstd(sc[ok]) + 1e-9)
+    mo_ok = ok & ~np.isnan(mo)
+    if mo_ok.sum() >= 10:
+        # robust z for motion (heavy right tail): median / MAD, clipped
+        med = np.nanmedian(mo[mo_ok])
+        mad = np.nanmedian(np.abs(mo[mo_ok] - med)) * 1.4826 + 1e-6
+        zm = np.clip((mo - med) / mad, -3, 3)
+    else:
+        zm = np.zeros_like(mo)
+    fused = zs + weight * np.where(np.isnan(zm), 0.0, zm)
+    for w, m, f, o in zip(timeline, mo, fused, ok):
+        w["motion"] = None if np.isnan(m) else round(float(m), 2)
+        w["fused"] = round(float(f), 3) if o else None
+    return timeline
 
 
 def _otsu(x: np.ndarray, bins: int = 64) -> float:
@@ -345,6 +374,7 @@ def run_speakers(
     t1: float | None = None,
     device: str = "cpu",
     force: bool = False,
+    face_motion: "FaceMotion | None" = None,
     progress: Callable[[float, str], None] | None = None,
 ) -> Path:
     if out.exists() and not force:
@@ -357,11 +387,18 @@ def run_speakers(
     np.save(out.with_name("enrol_embedding.npy"), enrol.embedding.astype(np.float32))
     enrol = calibrate(enrol, tl)                      # threshold on raw clean-enrolment similarity
     tl, ainfo = adapt(tl, E, enrol)                   # in-domain contrast score
+    fusion = {"used": False}
     if ainfo.get("adapted"):
-        scores = np.array([w["score"] for w in tl if w.get("score") is not None])
-        thr = float(ainfo.get("score_thr", _otsu(scores)))
-        margin = float(0.15 * scores.std()) if scores.size else 0.02
         key = "score"
+        if face_motion is not None:
+            centres = np.array([w["t"] for w in tl])
+            if face_motion.covers(float(centres[0]), float(centres[-1])):
+                tl = fuse_motion(tl, face_motion.per_window(centres))
+                key = "fused"
+                fusion = {"used": True, "weight": 0.5}
+        vals = np.array([w[key] for w in tl if w.get(key) is not None])
+        thr = float(_otsu(vals))
+        margin = float(0.15 * vals.std()) if vals.size else 0.02
     else:
         thr, margin, key = enrol.threshold, enrol.margin, "sim"
     segs = label_segments(transcript["segments"], tl, thr, margin, key=key)
@@ -369,7 +406,7 @@ def run_speakers(
     data = {"backend": tagger.name, "score_key": key, "threshold": round(thr, 3), "margin": round(margin, 3),
             "raw_threshold": round(enrol.threshold, 3),
             "window_s": WIN_S, "hop_s": HOP_S, "silence_db": SILENCE_DB,
-            "enrollment": enrol.stats(), "adaptation": ainfo,
+            "enrollment": enrol.stats(), "adaptation": ainfo, "fusion": fusion,
             "range": [t0, t1] if (t0 is not None or t1 is not None) else None,
             "counts": counts, "reactor_spans": reactor_spans(tl, thr, key=key),
             "timeline": tl, "segments": segs}
@@ -397,7 +434,7 @@ def self_check(sample_paths: list[Path], holdout: Path, device: str = "cpu") -> 
 
 # ---- human review export ---------------------------------------------------------------------
 def export_review(wav_path: Path, speakers_path: Path, out_dir: Path, *, per_class: int = 12,
-                  clip_s: float = 2.4) -> dict[str, Path]:
+                  clip_s: float = 2.4, within: list[tuple[float, float]] | None = None) -> dict[str, Path]:
     """Write short audio contact sheets so a human can verify the tagger by ear:
     ``review_reactor.wav`` (confident REACTOR windows), ``review_film.wav`` (confident FILM) and
     ``review_borderline.wav`` (near the threshold), each clip separated by a beep, plus a
@@ -407,6 +444,8 @@ def export_review(wav_path: Path, speakers_path: Path, out_dir: Path, *, per_cla
     d = json.loads(Path(speakers_path).read_text(encoding="utf-8"))
     key, thr, margin = d.get("score_key", "sim"), d["threshold"], d["margin"]
     tl = [w for w in d["timeline"] if w.get(key) is not None]
+    if within:
+        tl = [w for w in tl if any(a <= w["t"] <= b for a, b in within)]
     rng = np.random.default_rng(0)
 
     def pick(pred, n):
@@ -450,4 +489,44 @@ def export_review(wav_path: Path, speakers_path: Path, out_dir: Path, *, per_cla
     idx = out_dir / "review_index.txt"
     idx.write_text("\n".join(index_lines) + "\n", encoding="utf-8")
     outs["index"] = idx
+    picks = out_dir / "review_picks.json"
+    picks.write_text(json.dumps({k: [{"n": i + 1, "t": w["t"], key: w[key]} for i, w in enumerate(ws)]
+                                 for k, ws in sets.items()}, indent=1) + "\n", encoding="utf-8")
+    outs["picks"] = picks
     return outs
+
+
+# ---- evaluation against human labels --------------------------------------------------------
+def evaluate(speakers_path: Path, labels_path: Path) -> dict:
+    """AUC + accuracy of the stored scoring against ``labels.json``
+    (``{"labels": [{"t": 1520.3, "speaker": "REACTOR|FILM|EITHER"}]}``; EITHER is ignored)."""
+    d = json.loads(Path(speakers_path).read_text(encoding="utf-8"))
+    labs = [l for l in json.loads(Path(labels_path).read_text(encoding="utf-8"))["labels"] if l["speaker"] in ("REACTOR", "FILM")]
+    key, thr = d.get("score_key", "sim"), d["threshold"]
+    tl = d["timeline"]
+    ts = np.array([w["t"] for w in tl])
+    res: dict = {"n_labels": len(labs), "score_key": key, "threshold": thr}
+    if not labs:
+        return res
+    idx = [int(np.argmin(np.abs(ts - l["t"]))) for l in labs]
+    y = np.array([l["speaker"] == "REACTOR" for l in labs])
+    keep = np.array([abs(ts[i] - l["t"]) <= 1.0 and tl[i].get(key) is not None for i, l in zip(idx, labs)])
+    if keep.sum() == 0:
+        res["error"] = "no labelled windows inside this speakers.json range"
+        return res
+    for k in ("sim", "score", "fused"):
+        vals = np.array([np.nan if tl[i].get(k) is None else tl[i][k] for i in idx], dtype=float)
+        m = keep & ~np.isnan(vals)
+        if m.sum() < 4 or y[m].all() or (~y[m]).all():
+            continue
+        pos, neg = vals[m & y], vals[m & ~y]
+        auc = float(np.mean([(p > n) + 0.5 * (p == n) for p in pos for n in neg]))
+        res[f"auc_{k}"] = round(auc, 3)
+    vals = np.array([np.nan if tl[i].get(key) is None else tl[i][key] for i in idx], dtype=float)
+    m = keep & ~np.isnan(vals)
+    pred = vals[m] >= thr
+    tp = int((pred & y[m]).sum()); fp = int((pred & ~y[m]).sum()); fn = int((~pred & y[m]).sum()); tn = int((~pred & ~y[m]).sum())
+    res.update(accuracy=round((tp + tn) / max(1, m.sum()), 3),
+               precision=round(tp / max(1, tp + fp), 3), recall=round(tp / max(1, tp + fn), 3),
+               confusion={"tp": tp, "fp": fp, "fn": fn, "tn": tn})
+    return res

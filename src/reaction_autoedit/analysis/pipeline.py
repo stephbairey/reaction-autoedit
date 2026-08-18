@@ -13,7 +13,7 @@ from ..compute import ComputeProfile, detect
 from ..project import Project
 from . import audio, transcribe as _tr
 
-STEPS = ("transcribe", "speakers")
+STEPS = ("transcribe", "facemotion", "speakers")
 
 
 def analysis_dir(proj: Project, t0: float | None, t1: float | None) -> Path:
@@ -69,20 +69,45 @@ def run(
         out["transcript"] = tp
         proj.mark("transcribe", path=str(tp), range=[t0, t1])
 
+    if "facemotion" in steps:
+        from .face_motion import compute_face_motion
+
+        if proj.state.geometry is None:
+            log("facemotion skipped: no geometry yet (run `rae detect-layout`)")
+        else:
+            fm = adir / "face_motion.json"
+            if fm.exists() and not force:
+                log(f"face motion cached: {fm}")
+            else:
+                log("face motion (mouth-region frame differences @5 fps) …")
+                compute_face_motion(proj.source, proj.state.geometry, fm, t0=t0, t1=t1,
+                                    duration=proj.state.probe.duration if proj.state.probe else None,
+                                    force=force, progress=progress)
+            out["face_motion"] = fm
+            proj.mark("facemotion", path=str(fm), range=[t0, t1])
+
     if "speakers" in steps:
+        from .face_motion import FaceMotion
         from .speakers import run_speakers
 
         tp = adir / "transcript.json"
+        transcript = _tr.load_transcript(tp) if tp.exists() else {"segments": []}
         if not tp.exists():
-            raise RuntimeError("speakers needs a transcript first (run with steps including transcribe)")
+            log("  (no transcript yet — timeline/spans only; segment labels will be empty)")
         sp = adir / "speakers.json"
         if sp.exists() and not force:
             log(f"speakers cached: {sp}")
         else:
             samples = voice_samples(proj, voice)
             log(f"speaker attribution (resemblyzer, enrol from {[s.name for s in samples]}) …")
-            run_speakers(wav, _tr.load_transcript(tp), sp, sample_paths=samples, t0=t0, t1=t1,
-                         device=profile.device, force=force, progress=progress)
+            fm_path = adir / "face_motion.json"
+            if not fm_path.exists() and (proj.analysis_dir / "face_motion.json").exists():
+                fm_path = proj.analysis_dir / "face_motion.json"      # full-track motion covers any range
+            fm = FaceMotion(fm_path) if fm_path.exists() else None
+            if fm is None:
+                log("  (no face_motion.json — audio-only scoring; run the facemotion step for better accuracy)")
+            run_speakers(wav, transcript, sp, sample_paths=samples, t0=t0, t1=t1,
+                         device=profile.device, force=force, face_motion=fm, progress=progress)
         out["speakers"] = sp
         proj.mark("speakers", path=str(sp), range=[t0, t1])
     return out

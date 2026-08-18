@@ -255,7 +255,7 @@ def _not_yet(stage: str, module: str):
 @app.command()
 def analyze(
     name: str,
-    only: str = typer.Option("transcribe,speakers", help="comma list of steps: transcribe,speakers"),
+    only: str = typer.Option("transcribe,facemotion,speakers", help="comma list of steps: transcribe,facemotion,speakers"),
     range_: Optional[str] = typer.Option(None, "--range", help="analyse only T0-T1 seconds (e.g. 1500-1800); cached separately"),
     model: Optional[str] = typer.Option(None, help="whisper model (tiny/base/small/medium/large-v3); default from compute profile"),
     voice: list[Path] = typer.Option([], help="extra voice sample(s) for enrolment"),
@@ -353,6 +353,8 @@ def speaker_review(
     name: str,
     range_: Optional[str] = typer.Option(None, "--range"),
     per_class: int = typer.Option(12, help="clips per class"),
+    within: Optional[str] = typer.Option(None, help="only pick from these sub-ranges, e.g. 2343-2362,2600-2638"),
+    out: Optional[Path] = typer.Option(None, help="output dir (default <analysis dir>/review)"),
     root: Path = typer.Option(DEFAULT_ROOT),
 ):
     """Export audio contact sheets (reactor / borderline / film windows) to verify the tagger by ear."""
@@ -365,10 +367,32 @@ def speaker_review(
     sp = adir / "speakers.json"
     if not sp.exists():
         raise typer.BadParameter(f"no speakers.json in {adir}")
-    outs = export_review(proj.analysis_dir / "audio16k.wav", sp, adir / "review", per_class=per_class)
+    w = [tuple(float(x) for x in r.split("-")) for r in within.split(",")] if within else None
+    outs = export_review(proj.analysis_dir / "audio16k.wav", sp, out or (adir / "review"), per_class=per_class, within=w)
     for k, v in outs.items():
         console.print(f"  {k}: {v}")
     console.print("listen to each file; note the clip numbers that are wrong (see review_index.txt)")
+
+
+@app.command("speaker-eval")
+def speaker_eval(
+    name: str,
+    labels: Optional[Path] = typer.Option(None, help="labels.json (default work/<name>/analysis/labels.json)"),
+    range_: Optional[str] = typer.Option(None, "--range", help="which speakers.json to score (default: full)"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Score speakers.json against human labels (from annotated speaker-review picks)."""
+    from .analysis import pipeline
+    from .analysis.speakers import evaluate
+
+    proj = Project.load(name, root)
+    t0, t1 = _parse_range(range_)
+    sp = pipeline.analysis_dir(proj, t0, t1) / "speakers.json"
+    lp = labels or (proj.analysis_dir / "labels.json")
+    if not sp.exists() or not lp.exists():
+        raise typer.BadParameter(f"need both {sp} and {lp}")
+    res = evaluate(sp, lp)
+    console.print_json(json.dumps(res))
 
 
 @app.command("speaker-check")
