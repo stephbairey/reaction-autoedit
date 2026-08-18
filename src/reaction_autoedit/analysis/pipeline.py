@@ -48,6 +48,7 @@ def run(
     voice: list[Path] | None = None,
     backend: str = "auto",
     fusion_weight: float = 0.0,
+    chunk_min: float = 10.0,
     log: Callable[[str], None] = print,
     progress: Callable[[float, str], None] | None = None,
 ) -> dict[str, Path]:
@@ -110,7 +111,7 @@ def run(
                 log("  (no face_motion.json — audio-only scoring; run the facemotion step for better accuracy)")
             run_speakers(wav, transcript, sp, sample_paths=samples, t0=t0, t1=t1,
                          device=profile.device, force=force, face_motion=fm, backend=backend,
-                         fusion_weight=fusion_weight, labels_path=proj.analysis_dir / "labels.json", progress=progress)
+                         fusion_weight=fusion_weight, labels_path=proj.analysis_dir / "labels.json", chunk_min=chunk_min, progress=progress)
         out["speakers"] = sp
         proj.mark("speakers", path=str(sp), range=[t0, t1])
     return out

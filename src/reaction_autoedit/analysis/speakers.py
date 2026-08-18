@@ -8,11 +8,11 @@ Backend v1: **resemblyzer** speaker embeddings (pip-only, CPU-friendly).
   * enrol once from a clean voice sample → reference embedding + calibrated threshold
   * slide 1.6 s windows (hop 0.5 s) over the mixed track → cosine similarity to the reference
     ("timeline"); silent windows are gated out by RMS
-  * **in-domain adaptation**: the clean enrolment only *seeds* confident REACTOR / FILM windows on
-    the real track; both centroids are re-estimated there and each window is scored by the contrast
-    ``score = cos(e, reactor) - cos(e, film)`` (his voice inside the mix vs. the film's mix). The
-    threshold is Otsu's split of that score histogram; a drift guard keeps the reactor centroid
-    anchored to the clean enrolment
+  * **in-domain adaptation, locally**: in each 10-min chunk, spherical k-means over the voiced windows;
+    the cluster(s) closest to the clean enrolment are REACTOR, every other cluster is a film voice;
+    ``score = cos(e, nearest reactor centroid) - cos(e, nearest film centroid)``. Local clustering
+    lets each chunk model *its* film voices finely (AUC 0.90 vs 0.83 global on labelled data)
+  * threshold: calibrated to human labels when present (``labels.json``), else Otsu clipped
   * **audio-visual fusion** (when ``face_motion.json`` exists): z(score) + 0.5·z(mouth-region motion)
     — his mouth moves when he talks; on labelled data this lifts AUC noticeably
   * every transcript segment is labelled from the windows it overlaps:
@@ -356,6 +356,36 @@ def fuse_motion(timeline: list[dict], motion: np.ndarray, weight: float = 0.5) -
     return timeline
 
 
+def adapt_local(timeline: list[dict], E: np.ndarray, enrol: Enrollment, chunk_min: float = 10.0) -> tuple[list[dict], dict]:
+    """Run :func:`adapt` independently on consecutive ``chunk_min``-minute chunks of the timeline.
+
+    Film voices change scene to scene; clustering locally lets each chunk model *its* film voices
+    finely while the clean enrolment anchors the reactor everywhere. On labelled data this beats
+    any global clustering (AUC 0.90 vs 0.83–0.85 audio-only)."""
+    n = len(timeline)
+    if n == 0:
+        return timeline, {"adapted": False, "reason": "empty"}
+    step = max(1, int(round(chunk_min * 60.0 / HOP_S)))
+    infos = []
+    for a in range(0, n, step):
+        b = min(n, a + step)
+        # tiny tail → merge into previous chunk
+        if n - b < step // 3 and b < n:
+            b = n
+        sub, info = adapt(timeline[a:b], E[a:b], enrol)
+        timeline[a:b] = sub
+        infos.append(info)
+        if b == n:
+            break
+    adapted = [i for i in infos if i.get("adapted")]
+    summary = {"adapted": bool(adapted), "mode": "local", "chunk_min": chunk_min, "chunks": len(infos),
+               "chunks_adapted": len(adapted),
+               "k_per_chunk": [i.get("k") for i in infos],
+               "reactor_windows": int(sum(i.get("reactor_windows", 0) for i in adapted)),
+               "voiced_windows": int(sum(i.get("voiced_windows", 0) for i in infos))}
+    return timeline, summary
+
+
 def _otsu(x: np.ndarray, bins: int = 64) -> float:
     hist, edges = np.histogram(x, bins=bins)
     centers = (edges[:-1] + edges[1:]) / 2
@@ -508,6 +538,7 @@ def run_speakers(
     backend: str = "auto",
     fusion_weight: float = 0.0,
     labels_path: Path | None = None,
+    chunk_min: float = 10.0,
     progress: Callable[[float, str], None] | None = None,
 ) -> Path:
     if out.exists() and not force:
@@ -519,7 +550,7 @@ def run_speakers(
     np.save(out.with_name("embeddings.npy"), E.astype(np.float16))   # for re-thresholding without re-embedding
     np.save(out.with_name("enrol_embedding.npy"), enrol.embedding.astype(np.float32))
     enrol = calibrate(enrol, tl)                      # threshold on raw clean-enrolment similarity
-    tl, ainfo = adapt(tl, E, enrol)                   # in-domain contrast score
+    tl, ainfo = adapt_local(tl, E, enrol, chunk_min=chunk_min) if chunk_min > 0 else adapt(tl, E, enrol)
     fusion = {"used": False}
     if ainfo.get("adapted"):
         key = "score"

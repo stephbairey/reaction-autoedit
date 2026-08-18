@@ -261,6 +261,7 @@ def analyze(
     voice: list[Path] = typer.Option([], help="extra voice sample(s) for enrolment"),
     backend: str = typer.Option("auto", help="speaker backend: auto | ecapa | resemblyzer"),
     fusion: float = typer.Option(0.0, help="face-motion fusion weight (0 = audio only; motion still computed for peaks)"),
+    chunk_min: float = typer.Option(10.0, help="local speaker-adaptation chunk length in minutes (0 = global)"),
     force: bool = typer.Option(False, help="recompute even if cached"),
     no_gpu: bool = typer.Option(False, "--no-gpu"),
     root: Path = typer.Option(DEFAULT_ROOT),
@@ -284,7 +285,7 @@ def analyze(
             prog.update(task, completed=frac, msg=msg)
 
         outs = pipeline.run(proj, steps=steps, t0=t0, t1=t1, force=force, model=model, profile=profile,
-                            voice=list(voice), backend=backend, fusion_weight=fusion,
+                            voice=list(voice), backend=backend, fusion_weight=fusion, chunk_min=chunk_min,
                             log=lambda m: console.print(f"[dim]{m}[/]"), progress=progress)
         prog.update(task, completed=1.0, msg="done")
     for k, v in outs.items():
