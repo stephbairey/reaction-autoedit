@@ -125,8 +125,8 @@ class SelectParams:
     intro_s: float = 25.0
     outro_s: float = 20.0
     reaction_min_s: float = 3.0
-    reaction_max_s: float = 12.0
-    spine_slice_s: float = 6.0
+    reaction_max_s: float = 14.0
+    spine_slice_s: float = 7.0            # ≤ clip cap (clamped)
     spine_cutaway_s: float = 3.0
     max_gap_s: float = 75.0            # film seconds allowed without any coverage (tuned by runtime loop)
     peak_share: float = 0.55           # fraction of the runtime budget for Budget B before spine fills
@@ -151,6 +151,7 @@ class _Piece:
 def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: ReactorConfig | None = None,
            title: TitleConfig | None = None) -> EDL:
     A, P = analysis, params
+    P.spine_slice_s = min(P.spine_slice_s, P.clip_cap_s)
     reactor = reactor or ReactorConfig()
     title = title or TitleConfig()
     pieces: list[_Piece] = []
@@ -201,7 +202,7 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
         used += pp.dur
     gap = P.max_gap_s
     best: list[_Piece] | None = None
-    for _ in range(12):
+    for _ in range(24):
         spine = _spine_pieces(A, P, gap, chosen_peaks + pieces)
         total = fixed_dur + sum(pp.dur for pp in chosen_peaks) + sum(sp.dur for sp in spine)
         best = pieces + chosen_peaks + spine
@@ -220,7 +221,7 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
             remaining = [pp for pp in peak_pieces if pp not in chosen_peaks]
             if remaining:
                 chosen_peaks.append(remaining[0])
-            elif gap > 20:
+            elif gap > 8:
                 gap *= 0.8
             else:
                 break
