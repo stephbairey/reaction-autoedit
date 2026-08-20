@@ -5,11 +5,15 @@
   "voice_sample": "samples/sample-audio-longer.mp3",
   "layout_template": null,
   "pip": {
-    "corner": "bottom-right",
+    "corner": "bottom-left",
     "width_frac": 0.24,
     "margin_px": 24,
-    "border_px": 0,
-    "circle": null
+    "circle": null,
+    "border": {
+      "px": 4,
+      "color_from": "#9762FF",
+      "color_to": "#FF01F8"
+    }
   },
   "reactor_large": {
     "face_height_frac": 0.92,
@@ -18,7 +22,12 @@
     "darken": 0.25,
     "movie_pip": false,
     "sharpen": 0.4,
-    "vignette": true
+    "vignette": true,
+    "border": {
+      "px": 4,
+      "color_from": "#9762FF",
+      "color_to": "#FF01F8"
+    }
   },
   "branding": {
     "endcard": "templates/endcard.png",
