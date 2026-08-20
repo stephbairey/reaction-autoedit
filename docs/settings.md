@@ -11,6 +11,7 @@ is per-movie, and per-recording facts live in `work/<name>/project.json`.
 | Render resolution | `branding.resolution` (reactor) or `rae render --resolution` | `480` / `720` / `1080` (default 1080; preview always 480) |
 | Runtime target | `runtime_target_min` (title) | minutes, default 55 (main content; bumpers/cards ride on top) |
 | Max continuous movie clip | `clip_cap_s` (title) | seconds, default 7 (range 5–10 per the brief) |
+| Movie vs reactor screen time | `movie_frac` (title) | 0.5–0.95, default 0.75 |
 
 ## Branding (per reactor, "upload" = file picker)
 

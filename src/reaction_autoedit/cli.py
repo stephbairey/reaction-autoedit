@@ -308,6 +308,54 @@ def make_templates_cmd(
 
 
 @app.command()
+def narrative(
+    name: str,
+    model: str = typer.Option("claude-sonnet-5", help="Anthropic model"),
+    force: bool = typer.Option(False, help="redo both stages"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Narrative structure process (needs ANTHROPIC_API_KEY in .env):
+
+    N1: Wikipedia plot + film knowledge → Save-the-Cat beat sheet with the big lines.
+    N2: beat sheet aligned to THIS recording's transcript → analysis/narrative.json
+        (beats with spans + key lines with timestamps, priority must/should/could).
+    The selector then places musts first, shoulds next, and fills gaps with spine slices."""
+    from .select.narrative import build_plan, ground_plan
+
+    proj = Project.load(name, root)
+    tc = proj.title()
+    sp = proj.analysis_dir / "speakers.json"
+    tp = proj.analysis_dir / "transcript.json"
+    src = sp if sp.exists() else tp
+    if not src.exists():
+        raise typer.BadParameter(f"no transcript yet — run `rae analyze {name}` first")
+    plan = proj.analysis_dir / "narrative_plan.json"
+    with console.status("N1: plot → beat sheet…"):
+        build_plan(tc.title, tc.year, plan, model=model, force=force)
+    d1 = json.loads(plan.read_text(encoding="utf-8"))
+    wiki = (d1.get("source") or {}).get("url", "no wikipedia source — model knowledge only")
+    console.print(f"[green]plan[/]: {d1['n']} beats ({wiki})")
+    segs = json.loads(src.read_text(encoding="utf-8"))["segments"]
+    fb = tuple(proj.state.film_bounds) if proj.state.film_bounds else None
+    out = proj.analysis_dir / "narrative.json"
+    with console.status("N2: aligning to the recording…"):
+        ground_plan(plan, segs, out, model=model, film_bounds=fb, force=force)
+    d2 = json.loads(out.read_text(encoding="utf-8"))
+    console.print(f"[green]wrote[/] {out}: {d2['n_beats']} beats, {d2['n_key_lines']} key lines")
+    t = Table(show_header=True)
+    for c in ("time", "prio", "beat / line"):
+        t.add_column(c)
+    rows = [(b["t0"], b.get("priority", "?"), "◼ " + b.get("label", "")) for b in d2["beats"]]
+    rows += [(k["t0"], k.get("priority", "?"), "  “" + str(k.get("heard") or k.get("expected"))[:64] + "”") for k in d2["key_lines"]]
+    for t0, pr, txt in sorted(rows):
+        m, s_ = divmod(int(t0), 60)
+        t.add_row(f"{m}:{s_:02d}", pr, txt)
+    console.print(t)
+    proj.mark("narrative", path=str(out), beats=d2["n_beats"], key_lines=d2["n_key_lines"])
+    console.print(f"next: `rae select {name}` (musts placed first)")
+
+
+@app.command(hidden=True)
 def beats(
     name: str,
     model: str = typer.Option("claude-sonnet-5", help="Anthropic model for the narrative pass"),
@@ -649,6 +697,7 @@ def select(
         runtime_target_s=(runtime or tc.runtime_target_min) * 60.0,
         clip_cap_s=clip_cap or tc.clip_cap_s,
         withhold_climax=tc.withhold_climax if withhold is None else withhold,
+        movie_frac=tc.movie_frac,
         trim_intro=tc.trim_intro if trim_intro is None else trim_intro,
         trim_outro=tc.trim_outro if trim_outro is None else trim_outro,
         layout_min_s=tc.layout_min_s,

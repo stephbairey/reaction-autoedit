@@ -52,7 +52,8 @@ class Analysis:
     wt: np.ndarray = field(default_factory=lambda: np.zeros(0))       # timeline window centres
     wdb: np.ndarray = field(default_factory=lambda: np.zeros(0))      # per-window RMS dB
     wreact: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
-    beats: list[dict] = field(default_factory=list)          # optional LLM narrative beats
+    beats: list[dict] = field(default_factory=list)          # narrative beats (t0,t1,label,importance[,priority])
+    key_lines: list[dict] = field(default_factory=list)      # must/should dialogue lines (t0,t1,heard,beat,priority)
 
     @classmethod
     def load(cls, adir: Path, duration: float) -> "Analysis":
@@ -75,10 +76,16 @@ class Analysis:
         movie_change = np.asarray(scenes_d.get("movie_change", []), dtype=np.float32)
         sig_fps = float(scenes_d.get("fps", 5.0))
         dead = rd("deadair.json", {"spans": []})["spans"]
-        beats = rd("beats.json", {"beats": []})["beats"]
+        narr = rd("narrative.json", None)
+        if narr:
+            beats = narr.get("beats", [])
+            key_lines = narr.get("key_lines", [])
+        else:
+            beats = rd("beats.json", {"beats": []})["beats"]
+            key_lines = []
         fs, fe = _film_bounds(segs, cuts, duration, movie_change=movie_change, sig_fps=sig_fps)
         return cls(duration=duration, segments=segs, peaks=peaks, music=music, cuts=cuts, dead=dead,
-                   film_start=fs, film_end=fe, wt=wt, wdb=wdb, wreact=wreact, beats=beats)
+                   film_start=fs, film_end=fe, wt=wt, wdb=wdb, wreact=wreact, beats=beats, key_lines=key_lines)
 
     # ---- helpers ------------------------------------------------------------------------
     def song_overlap(self, a: float, b: float) -> float:
@@ -218,12 +225,13 @@ class SelectParams:
     trim_outro: bool = False           # False = uncut: the whole post-film stretch, full-frame
     intro_max_s: float = 150.0         # cap when trimming
     outro_max_s: float = 240.0         # cap when trimming
-    reaction_min_s: float = 3.0
-    reaction_max_s: float = 14.0
+    movie_frac: float = 0.75           # target fraction of the in-film content that is movie-large
+    reaction_min_s: float = 2.5
+    reaction_max_s: float = 9.0
     spine_slice_s: float = 7.0            # ≤ clip cap (clamped)
     spine_cutaway_s: float = 3.0
     max_gap_s: float = 75.0            # film seconds allowed without any coverage (tuned by runtime loop)
-    peak_share: float = 0.55           # fraction of the runtime budget for Budget B before spine fills
+    split_cutaway_s: float = 1.8       # reactor-cam visual during must-scene splits (film audio continues)
     tolerance_s: float = 60.0
     fps: float = 30.0
 
@@ -306,54 +314,147 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
                              segs=[Segment(id=f"cta{j}", **{"in": a}, out=b, layout="reactor-large", kind="cta",
                                            note="his full reaction to this moment is on Patreon")]))
 
-    # ---- runtime loop -----------------------------------------------------------------------
-    fixed_dur = sum(pc.dur for pc in pieces)
-    budget = P.runtime_target_s - fixed_dur - (reactor.branding.endcard_duration or 0)
-    # peaks by score until peak_share of the budget
+    # ---- Budget A first: narrative musts (then shoulds), under the movie/reactor ratio -------
+    musts = _narrative_pieces(A, P, ("must",))
+    shoulds = _narrative_pieces(A, P, ("should",)) if (A.key_lines or A.beats) else []
+    # de-conflict shoulds that overlap musts
+    mspans = [(pc.segs[0].in_, pc.segs[-1].out) for pc in musts]
+    shoulds = [pc for pc in shoulds if not any(a - 3 < pc.anchor < b + 3 for a, b in mspans)]
+
+    fixed_dur = sum(pc.dur for pc in pieces)              # intro/outro/cta
+    content_target = P.runtime_target_s - fixed_dur - (reactor.branding.endcard_duration or 0)
+    b_target = content_target * (1.0 - P.movie_frac)
+
     chosen_peaks: list[_Piece] = []
-    used = 0.0
+    b_used = _b_time(musts)
     for pp in peak_pieces:
-        if used + pp.dur > budget * P.peak_share:
-            break
+        pb = _b_time([pp])
+        if b_used + pb > b_target:
+            continue
         chosen_peaks.append(pp)
-        used += pp.dur
+        b_used += pb
+    chosen_shoulds = list(shoulds)
     gap = P.max_gap_s
     best: list[_Piece] | None = None
     for _ in range(24):
-        spine = _spine_pieces(A, P, gap, chosen_peaks + pieces)
-        total = fixed_dur + sum(pp.dur for pp in chosen_peaks) + sum(sp.dur for sp in spine)
-        best = pieces + chosen_peaks + spine
+        base = pieces + musts + chosen_shoulds + chosen_peaks
+        spine = _spine_pieces(A, P, gap, base)
+        total = sum(pc.dur for pc in base) + sum(sp.dur for sp in spine)
+        best = base + spine
         if abs(total - (P.runtime_target_s - (reactor.branding.endcard_duration or 0))) <= P.tolerance_s:
             break
         if total > P.runtime_target_s:
-            # over: widen gap first, then drop weakest peaks
             if gap < 240:
                 gap *= 1.25
             elif chosen_peaks:
-                chosen_peaks.pop()
+                chosen_peaks.pop()          # weakest-last ordering: peaks were added by score
+            elif chosen_shoulds:
+                chosen_shoulds.pop()
             else:
                 break
         else:
-            # under: add as many peaks as the shortfall allows, then tighten the spine gap
             short = (P.runtime_target_s - (reactor.branding.endcard_duration or 0)) - total
             remaining = [pp for pp in peak_pieces if pp not in chosen_peaks]
-            if remaining:
-                for pp in remaining:
-                    if short <= 0:
-                        break
-                    chosen_peaks.append(pp)
-                    short -= pp.dur
-            elif gap > 8:
-                gap *= max(0.6, 1.0 - short / max(1.0, total))
-            else:
-                break
+            added = False
+            for pp in remaining:
+                pb = _b_time([pp])
+                if short <= 0 or _b_time(musts + chosen_peaks + [pp]) > b_target:
+                    continue
+                chosen_peaks.append(pp)
+                short -= pp.dur
+                added = True
+            if not added:
+                if gap > 8:
+                    gap *= max(0.6, 1.0 - short / max(1.0, total))
+                else:
+                    break
     assert best is not None
     edl = _assemble(best, A, P, source, reactor, title)
-    edl.meta.update({"generator": "select v1", "runtime_target_s": P.runtime_target_s, "clip_cap_s": P.clip_cap_s,
+    a_t, b_t = _a_time(best), _b_time(best)
+    edl.meta.update({"generator": "select v2 (narrative)", "runtime_target_s": P.runtime_target_s,
+                     "clip_cap_s": P.clip_cap_s, "movie_frac_target": P.movie_frac,
+                     "movie_frac_actual": round(a_t / max(1.0, a_t + b_t), 3),
+                     "narrative": {"musts": len(musts), "shoulds_used": len(chosen_shoulds),
+                                   "key_lines": len(A.key_lines), "beats": len(A.beats)},
                      "peaks_used": len(chosen_peaks), "peaks_available": len(peak_pieces), "spine_gap_s": round(gap, 1),
                      "withheld": [round(p["t"], 1) for p in withheld], "film_start": round(A.film_start, 1),
                      "film_end": round(A.film_end, 1)})
     return edl
+
+
+def _b_time(pieces: list) -> float:
+    return sum(s.dur for pc in pieces for s in pc.segs if s.layout == "reactor-large")
+
+
+def _a_time(pieces: list) -> float:
+    return sum(s.dur for pc in pieces for s in pc.segs if s.layout == "movie-large")
+
+
+def _cover_span(a: float, b: float, tag: str, A: Analysis, P: SelectParams, *, score: float,
+                note: str, chapter: str | None = None) -> _Piece:
+    """Cover [a, b] chronologically under the clip cap: movie-large slices, with short reactor-cam
+    cutaways between them. The mixed audio track runs uninterrupted through the whole span — a split
+    only changes what is on SCREEN, never the dialogue — so long must-lines complete naturally."""
+    segs: list[Segment] = []
+    t = a
+    k = 0
+    while t < b - 0.4:
+        m_out = min(t + P.clip_cap_s, b)
+        if k == 0:
+            t2, m_out = A.avoid_flash(t, m_out)
+            if t2 < b - 0.4:
+                t = t2
+        if m_out - t >= 1.2:
+            segs.append(Segment(id=f"{tag}m{k}", **{"in": round(t, 2)}, out=round(m_out, 2), layout="movie-large",
+                                kind="story", score=score, chapter=chapter if k == 0 else None, note=note))
+        t = m_out
+        k += 1
+        if t < b - 0.4:  # visual breather; audio (the film line) continues underneath
+            c_out = min(t + P.split_cutaway_s, b - 0.2)
+            if c_out - t >= 1.0:
+                segs.append(Segment(id=f"{tag}c{k}", **{"in": round(t, 2)}, out=round(c_out, 2),
+                                    layout="reactor-large", kind="reaction", score=score,
+                                    note=note + " (split cutaway; film audio continues)"))
+                t = c_out
+    if not segs:
+        segs = [Segment(id=f"{tag}m0", **{"in": round(a, 2)}, out=round(max(a + 1.5, b), 2), layout="movie-large",
+                        kind="story", score=score, chapter=chapter, note=note)]
+    return _Piece(anchor=segs[0].in_, segs=segs, kind="narrative", score=score, note=note)
+
+
+def _narrative_pieces(A: Analysis, P: SelectParams, priorities: tuple[str, ...]) -> list[_Piece]:
+    """Coverage pieces for narrative musts/shoulds: matched key lines framed exactly; beats without
+    matched lines get one dialogue-dense slice inside their span."""
+    out: list[_Piece] = []
+    covered: list[tuple[float, float]] = []
+    lines = [k for k in A.key_lines if k.get("priority") in priorities]
+    for i, k in enumerate(lines):
+        a = max(A.film_start, k["t0"] - 1.2)
+        b = min(A.film_end, k["t1"] + 0.8)
+        a = A.quiet_point(A.snap_to_cut(a, 1.2))
+        if any(x0 - 2 < a < x1 + 2 for x0, x1 in covered):
+            continue
+        if A.song_overlap(a, b) > 0.5 * (b - a):
+            continue
+        out.append(_cover_span(a, b, f"n{i:03d}", A, P, score=3.0,
+                               note=f"key line [{k.get('priority')}]: {str(k.get('heard') or k.get('expected'))[:60]}"))
+        covered.append((a, b))
+    beat_labels_with_lines = {k.get("beat") for k in lines}
+    for j, bt in enumerate(x for x in A.beats if x.get("priority") in priorities):
+        if bt.get("label") in beat_labels_with_lines:
+            continue
+        mid = (bt["t0"] + bt["t1"]) / 2
+        if any(x0 - 5 < mid < x1 + 5 for x0, x1 in covered):
+            continue
+        piece = _spine_at(mid, 900 + j, A, P, lo=max(A.film_start, bt["t0"]), until=min(A.film_end, bt["t1"]))
+        if piece:
+            piece.kind = "narrative"
+            piece.note = f"beat [{bt.get('priority')}]: {bt.get('label', '')}"
+            piece.segs[0].note = piece.note + " — " + piece.segs[0].note
+            out.append(piece)
+            covered.append((piece.segs[0].in_, piece.segs[-1].out))
+    out.sort(key=lambda pc: pc.anchor)
+    return out
 
 
 def _peak_piece(p: dict, idx: int, A: Analysis, P: SelectParams) -> _Piece | None:

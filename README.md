@@ -198,13 +198,23 @@ src/reaction_autoedit/
   preflight/        Stage 0 + Stage 6 outcome table
 ```
 
-### Narrative beats (optional LLM pass)
+### Narrative structure (LLM, two stages)
 
-`rae beats <name>` sends the FILM dialogue to Claude and gets back a save-the-cat-style beat list
-(`analysis/beats.json`). The selector then anchors spine slices on important beats and names YouTube
-chapters after them — this is the answer to "the opening scenes are cut but not story-coherent".
-Needs `uv sync --extra llm` and `ANTHROPIC_API_KEY`. Works for any title in the backlog (no external
-"important scenes" dataset required; public ones only cover a fixed film list).
+`rae narrative <name>` (needs `uv sync --extra llm` + `ANTHROPIC_API_KEY` in `.env`) runs the
+narrative structure process:
+
+1. **Plan** — the film's Wikipedia plot section (fetched automatically) + the model's knowledge →
+   a Save-the-Cat beat sheet with each beat's *big lines* (the dialogue viewers expect to hear).
+2. **Grounding** — the beat sheet is aligned to this recording's transcript: beats get spans, big
+   lines get matched (fuzzily — whisper garbles quotes) with timestamps and a priority
+   (`must`/`should`/`could`) → `analysis/narrative.json`.
+3. **Selection** — `rae select` places every *must* first (long scenes split into clip-cap slices;
+   the film audio runs uninterrupted under the brief reactor-cam cutaways, so lines complete),
+   then *shoulds*, then reaction peaks under the film/reactor screen-time dial
+   (`movie_frac`, default 0.75), then gap-filling spine slices. Chapters come from beat labels.
+
+Works for any title in the backlog — no external "important scenes" dataset required (public ones
+only cover a fixed film list).
 
 ### Title card
 

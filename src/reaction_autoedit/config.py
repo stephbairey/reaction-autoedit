@@ -84,6 +84,7 @@ class TitleConfig(BaseModel):
     studio: str | None = None
     runtime_target_min: float = Field(55.0, ge=10, le=120)
     clip_cap_s: float = Field(7.0, ge=2, le=30)
+    movie_frac: float = Field(0.75, ge=0.5, le=0.95)   # target movie-large share of in-film content
     withhold_climax: bool = True
     layout_min_s: float = Field(2.0, ge=0.5)   # hysteresis: min duration per layout
     aspect_override: float | None = None      # movie aspect inside frame, e.g. 2.39
