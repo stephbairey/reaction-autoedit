@@ -305,6 +305,13 @@ def make_card(
     if base is None and rc.branding.title_card_base and Path(rc.branding.title_card_base).exists():
         base = Path(rc.branding.title_card_base)
     url = logo_url or tc.clearlogo_url
+    if url is None and logo is None and os.environ.get("TVDB_API_KEY"):
+        with console.status("looking up clearlogo on TVDB…"):
+            url = _tvdb_clearlogo(tc.title, tc.year)
+        if url:
+            console.print(f"TVDB clearlogo: {url}")
+        else:
+            console.print("[yellow]no clearlogo found on TVDB for this title[/]")
     logo_path = logo
     if logo_path is None and url:
         logo_path = proj.root / "assets" / "clearlogo.png"
@@ -318,6 +325,43 @@ def make_card(
     make_title_card(dest, logo=logo_path, base=base, title=tc.title, subtitle="" if base else "abridged reaction")
     console.print(f"[green]wrote[/] {dest}")
     console.print(f"reference it from the title config: \"title_card\": \"{dest.as_posix()}\" (or reactor branding.title_card)")
+
+
+def _tvdb_clearlogo(title: str, year: int | None) -> Optional[str]:
+    """TVDB v4: login with TVDB_API_KEY, search the movie, return its clearlogo artwork URL."""
+    import urllib.parse
+    from urllib.request import Request, urlopen
+
+    def call(path: str, token: str | None = None, payload: dict | None = None) -> dict:
+        req = Request("https://api4.thetvdb.com/v4" + path,
+                      data=json.dumps(payload).encode() if payload else None,
+                      headers={"Content-Type": "application/json",
+                               **({"Authorization": f"Bearer {token}"} if token else {})},
+                      method="POST" if payload else "GET")
+        with urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+
+    try:
+        token = call("/login", payload={"apikey": os.environ["TVDB_API_KEY"]})["data"]["token"]
+        q = urllib.parse.quote(title)
+        yr = f"&year={year}" if year else ""
+        hits = call(f"/search?query={q}&type=movie{yr}", token).get("data") or []
+        if not hits:
+            return None
+        movie_id = hits[0].get("tvdb_id") or hits[0].get("id", "").split("-")[-1]
+        ext = call(f"/movies/{movie_id}/extended", token).get("data") or {}
+        arts = ext.get("artworks") or []
+        # movie clearlogo artwork type is 25; fall back to any /clearlogo/ URL
+        for a in arts:
+            if a.get("type") == 25 and a.get("image"):
+                return a["image"]
+        for a in arts:
+            if "/clearlogo/" in (a.get("image") or ""):
+                return a["image"]
+        return None
+    except Exception as e:  # noqa: BLE001 - lookup is best-effort
+        console.print(f"[yellow]TVDB lookup failed: {e.__class__.__name__}: {e}[/]")
+        return None
 
 
 @app.command("init-config")

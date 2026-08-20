@@ -28,6 +28,15 @@ from ..edl import EDL, Overlay, Segment
 from ..models import Geometry
 from . import layouts, package
 
+def _file_sig(path: str | Path) -> str:
+    """Cheap content signature (size+mtime) so cached clips of images re-encode when the file changes."""
+    try:
+        st = Path(path).stat()
+        return f"{st.st_size}:{st.st_mtime_ns}"
+    except OSError:
+        return "missing"
+
+
 XFADE_DUR = 0.25
 AUDIO_FADE = 0.04
 AUDIO_ARGS = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
@@ -75,7 +84,7 @@ def _seg_hash(p: _Plan, geom: Geometry, target: RenderTarget, reactor: ReactorCo
     key = {
         "seg": p.seg.model_dump(by_alias=True, exclude={"score", "note", "tags", "chapter", "kind"}),
         "fade": [p.fade_in, p.fade_out],
-        "ov": [(o.model_dump(), rel) for o, rel in p.overlays],
+        "ov": [(o.model_dump(), rel, _file_sig(o.template or reactor.branding.lower_third or "")) for o, rel in p.overlays],
         "geom": geom.model_dump(exclude={"confidence", "notes", "source"}),
         "target": target.model_dump(),
         "style": {"pip": reactor.pip.model_dump(), "rl": reactor.reactor_large.model_dump(),
@@ -193,7 +202,7 @@ def render(
     if edl.endcard is not None:
         tpl = edl.endcard.template or reactor.branding.endcard
         if tpl and Path(tpl).exists():
-            key = hashlib.sha1(f"{tpl}{edl.endcard.dur}{target}{profile.encoder_args(preview)}".encode()).hexdigest()[:10]
+            key = hashlib.sha1(f"{tpl}{_file_sig(tpl)}{edl.endcard.dur}{target}{profile.encoder_args(preview)}".encode()).hexdigest()[:10]
             endcard_clip = tmp / f"endcard_{key}.mp4"
             if force or not endcard_clip.exists():
                 tasks.append((len(plans), endcard_clip, _card_cmd(tpl, edl.endcard.dur, endcard_clip, target, profile, preview, fade_out=False)))
@@ -211,7 +220,7 @@ def render(
         pos = 0
         if card.before_id is not None:
             pos = next((i for i, pl in enumerate(plans) if pl.seg.id == card.before_id), 0)
-        key = hashlib.sha1(f"{card.template}{card.dur}{target}{profile.encoder_args(preview)}".encode()).hexdigest()[:10]
+        key = hashlib.sha1(f"{card.template}{_file_sig(card.template)}{card.dur}{target}{profile.encoder_args(preview)}".encode()).hexdigest()[:10]
         clip = tmp / f"card_{ci}_{key}.mp4"
         card_inserts.append((pos, clip))
         if force or not clip.exists():
