@@ -53,6 +53,8 @@ class Branding(BaseModel):
     lower_third_schedule: LowerThirdSchedule = Field(default_factory=LowerThirdSchedule)
     title_card: str | None = None        # composed per-title card (movie logo over base); shown after the intro
     title_card_base: str | None = None   # the channel's base card the logo gets composed onto
+    opening_bumper: str | None = None    # short branded video prepended to every upload
+    ending_bumper: str | None = None     # short branded video appended after the endcard
 
 
 class ReactorConfig(BaseModel):

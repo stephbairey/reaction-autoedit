@@ -154,6 +154,16 @@ def _card_cmd(template: str, dur: float, out: Path, target: RenderTarget,
             + AUDIO_ARGS + ["-shortest", "-y", str(out)])
 
 
+def _bumper_cmd(src: str, out: Path, target: RenderTarget, profile: ComputeProfile, preview: bool) -> list[str]:
+    """Re-encode a branded bumper video to the exact concat parameters (any input size/fps/audio)."""
+    graph = (f"[0:v]scale={target.w}:{target.h}:force_original_aspect_ratio=decrease:flags=bicubic,"
+             f"pad={target.w}:{target.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={target.fps},format=yuv420p[v];"
+             f"[0:a]aresample=48000,apad[a]")
+    return (["-i", src, "-filter_complex", graph, "-map", "[v]", "-map", "[a]"]
+            + profile.encoder_args(preview) + ["-pix_fmt", "yuv420p", "-g", str(int(target.fps * 2))]
+            + AUDIO_ARGS + ["-shortest", "-y", str(out)])
+
+
 def render(
     edl: EDL,
     geom: Geometry,
@@ -210,6 +220,22 @@ def render(
             warnings.append(f"endcard template missing ({tpl}); skipped")
             console.print(f"[yellow]warn:[/] endcard template missing ({tpl}); skipped")
 
+    # branded bumpers: opening at the very start, ending at the very end (after the endcard)
+    bumper_clips: dict[str, Path | None] = {"open": None, "end": None}
+    for kind, tpl in (("open", reactor.branding.opening_bumper), ("end", reactor.branding.ending_bumper)):
+        if not tpl:
+            continue
+        if not Path(tpl).exists():
+            warnings.append(f"{kind} bumper missing ({tpl}); skipped")
+            console.print(f"[yellow]warn:[/] {kind} bumper missing ({tpl}); skipped")
+            continue
+        key = hashlib.sha1(f"{tpl}{_file_sig(tpl)}{target}{profile.encoder_args(preview)}".encode()).hexdigest()[:10]
+        clip = tmp / f"bumper_{kind}_{key}.mp4"
+        bumper_clips[kind] = clip
+        if force or not clip.exists():
+            tasks.append((len(plans) + 100 + (0 if kind == "open" else 1), clip,
+                          _bumper_cmd(tpl, clip, target, profile, preview)))
+
     # full-frame cards (e.g. movie title card after the intro)
     card_inserts: list[tuple[int, Path]] = []      # (index into clip_paths to insert BEFORE, clip)
     for ci, card in enumerate(edl.cards):
@@ -249,18 +275,25 @@ def render(
     for pos, clip in sorted(card_inserts, key=lambda x: -x[0]):
         if clip.exists():
             seq.insert(pos, clip)
+    if bumper_clips["open"] and bumper_clips["open"].exists():
+        seq.insert(0, bumper_clips["open"])
     if endcard_clip:
         seq.append(endcard_clip)
+    if bumper_clips["end"] and bumper_clips["end"].exists():
+        seq.append(bumper_clips["end"])
     with lst.open("w", encoding="utf-8") as fh:
         for c in seq:
             fh.write(f"file '{c.resolve().as_posix()}'\n")
     ffmpeg.run(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", "-movflags", "+faststart", "-y", str(out)])
 
     # sidecars
+    head = 0.0
+    if bumper_clips["open"] and bumper_clips["open"].exists():
+        head = ffmpeg.probe(bumper_clips["open"]).duration
     edl_copy = out.with_suffix(".edl.json")
     edl.save(edl_copy)
-    chapters = package.write_chapters(edl, out.with_suffix(".chapters.txt"))
-    desc = package.write_description(edl, reactor, title, out.with_suffix(".description.txt"))
+    chapters = package.write_chapters(edl, out.with_suffix(".chapters.txt"), head_offset=head)
+    desc = package.write_description(edl, reactor, title, out.with_suffix(".description.txt"), head_offset=head)
     package.write_midrolls(edl, out.with_suffix(".midrolls.txt"))
     total = edl.duration + (edl.endcard.dur if endcard_clip and edl.endcard else 0.0) + sum(c.dur for c in edl.cards)
     if not keep_tmp:
