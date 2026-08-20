@@ -54,12 +54,28 @@ class LowerThirdSchedule(BaseModel):
     at_min: list[float] | None = None   # explicit minute marks (replaces the periodic schedule)
 
 
+class MicroCut(BaseModel):
+    """Periodic micro jump-cut applied to movie footage at render time — a Content-ID fingerprint
+    treatment. Every ``every_s`` seconds of a movie-large segment, ``drop_frames`` frames of BOTH
+    audio and video are skipped together (sync preserved on the mixed track), breaking the match
+    chain. ~3 frames / 2 s is imperceptible. Off by default; enabling raises 'no-claim' odds but a
+    detected manipulation is itself a policy risk — an informed per-channel choice."""
+
+    enabled: bool = False
+    scope: Literal["narrative", "all"] = "narrative"   # tool-in-the-belt: only key scenes / fan-favorite
+                                                       # moments by default, not the whole render
+    extended_cap_s: float = Field(9.0, ge=5, le=15)    # narrative slices may run this long WITH micro-cuts
+    drop_frames: int = Field(3, ge=1, le=8)
+    every_s: float = Field(2.0, ge=0.5, le=10.0)
+
+
 class Branding(BaseModel):
     endcard: str | None = "templates/endcard.png"
     lower_third: str | None = "templates/lower_third.png"
     endcard_duration: float = 8.0
     lower_third_duration: float = 6.0
     resolution: str = "1080"        # default final render resolution: 480 | 720 | 1080
+    micro_cut: MicroCut = Field(default_factory=MicroCut)   # Content-ID fingerprint treatment
     lower_third_schedule: LowerThirdSchedule = Field(default_factory=LowerThirdSchedule)
     title_card: str | None = None        # composed per-title card (movie logo over base); shown after the intro
     title_card_base: str | None = None   # the channel's base card the logo gets composed onto

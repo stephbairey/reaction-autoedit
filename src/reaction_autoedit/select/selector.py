@@ -321,8 +321,10 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
     if film_bounds is not None:
         A.film_start, A.film_end = film_bounds
         A.notes = getattr(A, "notes", []) + ["film bounds set manually"]
-    P.spine_slice_s = min(P.spine_slice_s, P.clip_cap_s)
     reactor = reactor or ReactorConfig()
+    mc = reactor.branding.micro_cut
+    P.narrative_cap_s = mc.extended_cap_s if mc.enabled else P.clip_cap_s   # key scenes may run longer WITH micro-cuts
+    P.spine_slice_s = min(P.spine_slice_s, P.clip_cap_s)
     title = title or TitleConfig()
     pieces: list[_Piece] = []
 
@@ -472,19 +474,21 @@ def _cover_span(a: float, b: float, tag: str, A: Analysis, P: SelectParams, *, s
     cutaways between them. The mixed audio track runs uninterrupted through the whole span — a split
     only changes what is on SCREEN, never the dialogue — so long must-lines complete naturally."""
     segs: list[Segment] = []
+    cap = getattr(P, "narrative_cap_s", P.clip_cap_s)
     t = a
     k = 0
     while t < b - 0.4:
-        m_out = min(t + P.clip_cap_s, b)
+        m_out = min(t + cap, b)
         if k == 0:
             t2, m_out = A.avoid_flash(t, m_out)
             if t2 < b - 0.4:
                 t = t2
         if m_out < b - 0.4:
-            m_out = min(A.complete_dialog(m_out), b, t + P.clip_cap_s + 1.0)
+            m_out = min(A.complete_dialog(m_out), b, t + cap + 1.0)
         if m_out - t >= P.min_shot_s:
             segs.append(Segment(id=f"{tag}m{k}", **{"in": round(t, 2)}, out=round(m_out, 2), layout="movie-large",
-                                kind="story", score=score, chapter=chapter if k == 0 else None, note=note))
+                                kind="story", score=score, chapter=chapter if k == 0 else None, note=note,
+                                tags=["narrative"]))
         t = m_out
         k += 1
         if t < b - 0.4:  # visual breather; audio (the film line) continues underneath
@@ -679,6 +683,35 @@ def _spine_at(anchor: float, k: int, A: Analysis, P: SelectParams, lo: float, un
     return _Piece(anchor=start, segs=segs, kind="spine", score=score, note="spine")
 
 
+def _micro_cut_segments(final: list[Segment], mc, fps: float) -> list[Segment]:
+    """Split movie-large segments into sub-segments with tiny source-time skips (drop_frames/fps
+    seconds every every_s) — the micro jump-cut fingerprint treatment. Audio and video skip
+    together (mixed track), so sync holds; the renderer's 40 ms audio fades mask each seam."""
+    if not mc.enabled:
+        return final
+    d = mc.drop_frames / fps
+    out: list[Segment] = []
+    for s in final:
+        in_scope = mc.scope == "all" or "narrative" in s.tags
+        if s.layout != "movie-large" or not in_scope or s.dur <= mc.every_s + 0.8:
+            out.append(s)
+            continue
+        t, k = s.in_, 0
+        while t < s.out - 0.4:
+            end = min(t + mc.every_s, s.out)
+            if s.out - end < 0.8:
+                end = s.out
+            out.append(s.model_copy(update={
+                "id": f"{s.id}~{k}", "in_": round(t, 3), "out": round(end, 3),
+                "transition": s.transition if k == 0 else "cut",
+                "chapter": s.chapter if k == 0 else None,
+                "note": s.note + (f" [micro-cut {mc.drop_frames}f/{mc.every_s:g}s]" if k == 0 else " [micro-cut]"),
+            }))
+            k += 1
+            t = end + d
+    return out
+
+
 def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, reactor: ReactorConfig, title: TitleConfig) -> EDL:
     segs = [s for pc in sorted(pieces, key=lambda p: p.anchor) for s in pc.segs]
     segs.sort(key=lambda s: s.in_)
@@ -716,8 +749,9 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
     # not possible without extra material → hard-trim to cap)
     final: list[Segment] = []
     for s in merged:
-        if s.layout == "movie-large" and s.dur > P.clip_cap_s + 1e-6:
-            s = s.model_copy(update={"out": s.in_ + P.clip_cap_s, "note": s.note + " (trimmed to clip cap)"})
+        seg_cap = getattr(P, "narrative_cap_s", P.clip_cap_s) if "narrative" in s.tags else P.clip_cap_s
+        if s.layout == "movie-large" and s.dur > seg_cap + 1e-6:
+            s = s.model_copy(update={"out": s.in_ + seg_cap, "note": s.note + " (trimmed to clip cap)"})
         if s.layout == "movie-large" and s.dur < P.min_shot_s:
             continue                                     # a shot must register (≥ min_shot_s)
         if s.dur < P.layout_min_s and s.kind not in ("cta",):
@@ -743,7 +777,8 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
                 run, prev_out = 0.0, None
             continue
         contiguous = prev_out is not None and abs(s.in_ - prev_out) < 0.75
-        if contiguous and run + s.dur > P.clip_cap_s + 0.5:
+        run_cap = getattr(P, "narrative_cap_s", P.clip_cap_s) if "narrative" in s.tags else P.clip_cap_s
+        if contiguous and run + s.dur > run_cap + 0.5:
             skip = P.jump_skip_s
             new_in = min(s.in_ + skip, s.out - P.min_shot_s)
             if new_in > s.in_ + 0.4:
@@ -786,6 +821,7 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
     # renumber ids chronologically but keep meaning
     for i, s in enumerate(final, 1):
         s.id = f"{i:03d}_{s.id}"
+    final = _micro_cut_segments(final, reactor.branding.micro_cut, P.fps)
     # transition: dip to black between intro and the film
     for i, s in enumerate(final):
         if i > 0 and final[i - 1].kind == "intro":

@@ -36,6 +36,11 @@
     "lower_third_duration": 6.0,
     "title_card_base": "templates/title-card-bg.jpg",
     "opening_bumper": "assets/opening_bumper.mp4",
-    "ending_bumper": "assets/ending_bumper.mp4"
+    "ending_bumper": "assets/ending_bumper.mp4",
+    "micro_cut": {
+      "enabled": true,
+      "drop_frames": 3,
+      "every_s": 2.0
+    }
   }
 }

@@ -65,3 +65,22 @@ def test_silence_cut_in_intro():
     assert intro[0].out < 21 and intro[1].in_ > 27
     edl2 = select(_synthetic(), SelectParams(runtime_target_s=10 * 60), source="x.mp4")
     assert len([s for s in edl2.segments if s.kind == "intro"]) == 1   # off by default
+
+
+def test_micro_cut_splits_movie_segments():
+    from reaction_autoedit.config import MicroCut
+    from reaction_autoedit.edl import Segment
+    from reaction_autoedit.select.selector import _micro_cut_segments
+
+    seg = Segment(id="a", **{"in": 100.0}, out=109.0, layout="movie-large", chapter="Beat", tags=["narrative"])
+    plain = Segment(id="p", **{"in": 90.0}, out=97.0, layout="movie-large")
+    rl = Segment(id="b", **{"in": 109.0}, out=112.0, layout="reactor-large")
+    out = _micro_cut_segments([plain, seg, rl], MicroCut(enabled=True, drop_frames=3, every_s=2.0), fps=30.0)
+    assert out[0].id == "p"                                 # non-narrative movie seg untouched (scope=narrative)
+    subs = [s for s in out if s.id.startswith("a~")]
+    assert len(subs) >= 4                                   # 9 s → ~4-5 sub-slices
+    for prev, nxt in zip(subs, subs[1:]):
+        assert abs((nxt.in_ - prev.out) - 0.1) < 1e-6       # exactly 3 frames @30fps skipped
+    assert subs[0].chapter == "Beat" and subs[1].chapter is None
+    assert out[-1].id == "b"                                # reactor-large untouched
+    assert sum(s.dur for s in subs) < 9.0                   # net footage shrinks
