@@ -583,6 +583,8 @@ def select(
     runtime: Optional[float] = typer.Option(None, help="target runtime in minutes (default: title config, 55)"),
     clip_cap: Optional[float] = typer.Option(None, help="max continuous movie footage in seconds (default: title config, 7)"),
     withhold: Optional[bool] = typer.Option(None, help="withhold-the-climax (default: title config)"),
+    trim_intro: Optional[bool] = typer.Option(None, "--trim-intro/--uncut-intro", help="cut the intro down to his monologue (default: title config, uncut)"),
+    trim_outro: Optional[bool] = typer.Option(None, "--trim-outro/--uncut-outro", help="cut the outro down to his wrap-up (default: title config, uncut)"),
     out: Optional[Path] = typer.Option(None, help="EDL path (default work/<name>/edl.json)"),
     root: Path = typer.Option(DEFAULT_ROOT),
 ):
@@ -595,6 +597,8 @@ def select(
         runtime_target_s=(runtime or tc.runtime_target_min) * 60.0,
         clip_cap_s=clip_cap or tc.clip_cap_s,
         withhold_climax=tc.withhold_climax if withhold is None else withhold,
+        trim_intro=tc.trim_intro if trim_intro is None else trim_intro,
+        trim_outro=tc.trim_outro if trim_outro is None else trim_outro,
         layout_min_s=tc.layout_min_s,
     )
     an = Analysis.load(proj.analysis_dir, proj.state.probe.duration)

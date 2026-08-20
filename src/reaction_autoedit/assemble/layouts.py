@@ -5,6 +5,8 @@ Both layouts are pure crop/scale/overlay operations on the composite frame (inpu
 - ``movie-large``  : movie active picture fills the frame (letter/pillar-boxed), facecam as small PiP.
 - ``reactor-large``: facecam blown up and centred over a blurred+darkened movie background
                      (optionally with the movie as a small PiP).
+- ``full``         : the composite frame exactly as recorded (no crop/zoom) — intro and outro,
+                     where the streamer's own frame layout IS the shot.
 
 Every builder returns a filtergraph string that consumes ``[0:v]`` and produces ``[vout]``.
 """
@@ -127,7 +129,15 @@ def reactor_large(geom: Geometry, target: RenderTarget, style: ReactorLargeStyle
     return ";".join(parts)
 
 
+def full(geom: Geometry, target: RenderTarget) -> str:
+    W, H = target.w, target.h
+    return (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic,"
+            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[vout]")
+
+
 def build(layout: str, geom: Geometry, target: RenderTarget, pip: PipStyle, rl: ReactorLargeStyle) -> str:
+    if layout == "full":
+        return full(geom, target)
     if layout == "movie-large":
         return movie_large(geom, target, pip)
     if layout == "reactor-large":

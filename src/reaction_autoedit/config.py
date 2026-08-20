@@ -76,6 +76,8 @@ class TitleConfig(BaseModel):
     layout_min_s: float = Field(2.0, ge=0.5)   # hysteresis: min duration per layout
     aspect_override: float | None = None      # movie aspect inside frame, e.g. 2.39
     risk_flag: Literal["green", "yellow", "red", "unknown"] = "unknown"
+    trim_intro: bool = False                  # False (default) = intro uncut: everything before the film
+    trim_outro: bool = False                  # False (default) = outro uncut: everything after the film
     title_card: str | None = None             # card image shown between intro and film (overrides reactor branding)
     clearlogo_url: str | None = None          # e.g. TVDB clearlogo PNG; `rae make-card` fetches + composes
 

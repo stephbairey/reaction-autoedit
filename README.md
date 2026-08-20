@@ -143,10 +143,17 @@ plain JSON, meant to be edited by hand in `--review` mode:
 ```
 
 - `in` / `out` are **source** seconds; segments must be chronological. `at` (overlays) is on the **output** timeline.
-- `layout`: `movie-large` (film fills frame, facecam PiP) or `reactor-large` (facecam blown up over a blurred film background).
+- `layout`: `movie-large` (film fills frame, facecam PiP), `reactor-large` (facecam blown up over a blurred film background), or `full` (the composite as recorded — intro/outro).
 - `kind`: `story | reaction | cta | intro | outro` — informational now, used by selection/mid-roll logic.
 - `transition`: `cut` or `xfade` (rendered as a short dip-to-black into the segment).
 - `chapter`: starts a YouTube chapter. `rae edl-check` warns about clip-cap violations, ordering, out-of-range times.
+
+### Intro and outro
+
+The intro (everything before the film) and outro (everything after) are shown **full-frame and uncut
+by default** — the streamer's own composite layout is the shot. To have the tool cut them down to
+his monologue/wrap-up instead, set `trim_intro` / `trim_outro` in the title config, or pass
+`--trim-intro` / `--trim-outro` to `rae select` (each independently).
 
 ## Configuration
 

@@ -180,8 +180,10 @@ class SelectParams:
     withhold_n: int = 3
     withhold_last_frac: float = 0.25
     layout_min_s: float = 2.0
-    intro_max_s: float = 150.0         # intro runs until he stops talking / film starts (capped)
-    outro_max_s: float = 240.0         # outro runs to the end of his last remarks (capped)
+    trim_intro: bool = False           # False = uncut: the whole pre-film stretch, full-frame
+    trim_outro: bool = False           # False = uncut: the whole post-film stretch, full-frame
+    intro_max_s: float = 150.0         # cap when trimming
+    outro_max_s: float = 240.0         # cap when trimming
     reaction_min_s: float = 3.0
     reaction_max_s: float = 14.0
     spine_slice_s: float = 7.0            # ≤ clip cap (clamped)
@@ -214,26 +216,39 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
     title = title or TitleConfig()
     pieces: list[_Piece] = []
 
-    # ---- intro / outro --------------------------------------------------------------------
-    # intro: from his first words to the end of his last pre-film sentence ("let's get into it"),
-    # bounded by the film start and a sanity cap.
+    # ---- intro / outro (full-frame: the streamer's own composite layout IS the shot) ---------
+    # default UNCUT: the whole pre-film / post-film stretch. With trim_intro/trim_outro, cut down
+    # to his speech ("let's get into it" … first words → last words), capped.
     intro_segs = A.reactor_segments(0.0, A.film_start)
-    if intro_segs and P.intro_max_s > 0:
-        a = max(0.0, intro_segs[0]["start"] - 0.4)
-        b = min(intro_segs[-1]["end"] + 0.6, A.film_start, a + P.intro_max_s)
-        if b - a >= 3.0:
-            pieces.append(_Piece(anchor=a, kind="intro", note="intro monologue (until he finishes)",
-                                 segs=[Segment(id="intro", **{"in": a}, out=b, layout="reactor-large", kind="intro",
-                                               chapter="Intro")]))
-    # outro: from his first post-film words to the end of his last (complete wrap-up).
+    if P.trim_intro:
+        if intro_segs and P.intro_max_s > 0:
+            a = max(0.0, intro_segs[0]["start"] - 0.4)
+            b = min(intro_segs[-1]["end"] + 0.6, A.film_start, a + P.intro_max_s)
+        else:
+            a = b = 0.0
+        note = "intro (trimmed to his monologue)"
+    else:
+        a, b = 0.0, A.film_start
+        note = "intro (uncut)"
+    if b - a >= 3.0:
+        pieces.append(_Piece(anchor=a, kind="intro", note=note,
+                             segs=[Segment(id="intro", **{"in": round(a, 2)}, out=round(b, 2), layout="full",
+                                           kind="intro", chapter="Intro", note=note)]))
     outro_segs = A.reactor_segments(A.film_end, A.duration)
-    if outro_segs and P.outro_max_s > 0:
-        a = max(A.film_end, outro_segs[0]["start"] - 0.4)
-        b = min(outro_segs[-1]["end"] + 0.8, A.duration, a + P.outro_max_s)
-        if b - a >= 3.0:
-            pieces.append(_Piece(anchor=a, kind="outro", note="outro (complete)",
-                                 segs=[Segment(id="outro", **{"in": a}, out=b, layout="reactor-large", kind="outro",
-                                               chapter="Final thoughts")]))
+    if P.trim_outro:
+        if outro_segs and P.outro_max_s > 0:
+            a = max(A.film_end, outro_segs[0]["start"] - 0.4)
+            b = min(outro_segs[-1]["end"] + 0.8, A.duration, a + P.outro_max_s)
+        else:
+            a = b = A.film_end
+        note = "outro (trimmed to his wrap-up)"
+    else:
+        a, b = A.film_end, A.duration
+        note = "outro (uncut)"
+    if b - a >= 3.0:
+        pieces.append(_Piece(anchor=a, kind="outro", note=note,
+                             segs=[Segment(id="outro", **{"in": round(a, 2)}, out=round(b, 2), layout="full",
+                                           kind="outro", chapter="Final thoughts", note=note)]))
 
     # ---- Budget B: peaks ------------------------------------------------------------------
     peaks = sorted([p for p in A.peaks if A.film_start <= p["t"] <= A.film_end], key=lambda p: -p["score"])

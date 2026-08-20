@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .config import RenderTarget
 
-Layout = Literal["movie-large", "reactor-large"]
+Layout = Literal["movie-large", "reactor-large", "full"]
 Kind = Literal["story", "reaction", "cta", "intro", "outro"]
 Transition = Literal["cut", "xfade"]
 
