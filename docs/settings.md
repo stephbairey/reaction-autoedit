@@ -43,6 +43,7 @@ is per-movie, and per-recording facts live in `work/<name>/project.json`.
 | Show title card | `show_title_card` | on/off, default on |
 | Auto-cut intro | `trim_intro` | default off (uncut, full-frame) |
 | Auto-cut outro | `trim_outro` | default off (uncut, full-frame) |
+| Cut intro/outro silences | `silence_cut_s` | seconds (e.g. 2.5); silences longer than this are removed; default off |
 | Withhold the climax | `withhold_climax` | default on |
 | Film start/end | `rae set-film-bounds` (project) | auto-detected; manual pin accepts preview timestamps |
 

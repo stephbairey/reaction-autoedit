@@ -110,6 +110,39 @@ class Analysis:
                 return b
         return None
 
+    def keep_spans_without_silence(self, a: float, b: float, min_silence: float,
+                                   pad: float = 0.35, min_keep: float = 1.0) -> list[tuple[float, float]]:
+        """Split [a, b] into spans, dropping silent stretches longer than ``min_silence`` seconds.
+        Silence = timeline windows below the speakers-stage silence floor. Falls back to [(a, b)]."""
+        if self.wt.size == 0 or min_silence <= 0:
+            return [(a, b)]
+        m = (self.wt >= a) & (self.wt <= b)
+        if not m.any():
+            return [(a, b)]
+        ts, dbs = self.wt[m], self.wdb[m]
+        silent = dbs < -42.0
+        spans: list[tuple[float, float]] = []
+        cur = a
+        i = 0
+        n = len(ts)
+        while i < n:
+            if silent[i]:
+                j = i
+                while j < n and silent[j]:
+                    j += 1
+                s0 = ts[i] - 0.25
+                s1 = (ts[j - 1] + 0.25) if j < n else b
+                if s1 - s0 >= min_silence:
+                    if s0 + pad - cur >= min_keep:
+                        spans.append((cur, s0 + pad))
+                    cur = max(cur, s1 - pad)
+                i = j
+            else:
+                i += 1
+        if b - cur >= min_keep:
+            spans.append((cur, b))
+        return spans or [(a, b)]
+
     def quiet_point(self, t: float, radius: float = 1.2) -> float:
         """Nearest time within ±radius where the mixed audio is locally quiet — cut there instead of
         mid-dialogue. Falls back to t."""
@@ -221,6 +254,7 @@ class SelectParams:
     withhold_n: int = 3
     withhold_last_frac: float = 0.25
     layout_min_s: float = 2.0
+    silence_cut_s: float | None = None # drop silent stretches longer than this from intro/outro (None = off)
     trim_intro: bool = False           # False = uncut: the whole pre-film stretch, full-frame
     trim_outro: bool = False           # False = uncut: the whole post-film stretch, full-frame
     intro_max_s: float = 150.0         # cap when trimming
@@ -276,9 +310,13 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
         a, b = 0.0, A.film_start
         note = "intro (uncut)"
     if b - a >= 3.0:
-        pieces.append(_Piece(anchor=a, kind="intro", note=note,
-                             segs=[Segment(id="intro", **{"in": round(a, 2)}, out=round(b, 2), layout="full",
-                                           kind="intro", chapter="Intro", note=note)]))
+        spans = A.keep_spans_without_silence(a, b, P.silence_cut_s or 0.0)
+        if len(spans) > 1:
+            note += f" — {len(spans) - 1} silence(s) > {P.silence_cut_s:.1f}s cut"
+        pieces.append(_Piece(anchor=spans[0][0], kind="intro", note=note,
+                             segs=[Segment(id=f"intro{k}" if k else "intro", **{"in": round(x, 2)}, out=round(y, 2),
+                                           layout="full", kind="intro", chapter="Intro" if k == 0 else None, note=note)
+                                   for k, (x, y) in enumerate(spans)]))
     outro_segs = A.reactor_segments(A.film_end, A.duration)
     if P.trim_outro:
         if outro_segs and P.outro_max_s > 0:
@@ -291,9 +329,13 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
         a, b = A.film_end, A.duration
         note = "outro (uncut)"
     if b - a >= 3.0:
-        pieces.append(_Piece(anchor=a, kind="outro", note=note,
-                             segs=[Segment(id="outro", **{"in": round(a, 2)}, out=round(b, 2), layout="full",
-                                           kind="outro", chapter="Final thoughts", note=note)]))
+        spans = A.keep_spans_without_silence(a, b, P.silence_cut_s or 0.0)
+        if len(spans) > 1:
+            note += f" — {len(spans) - 1} silence(s) > {P.silence_cut_s:.1f}s cut"
+        pieces.append(_Piece(anchor=spans[0][0], kind="outro", note=note,
+                             segs=[Segment(id=f"outro{k}" if k else "outro", **{"in": round(x, 2)}, out=round(y, 2),
+                                           layout="full", kind="outro", chapter="Final thoughts" if k == 0 else None,
+                                           note=note) for k, (x, y) in enumerate(spans)]))
 
     # ---- Budget B: peaks ------------------------------------------------------------------
     peaks = sorted([p for p in A.peaks if A.film_start <= p["t"] <= A.film_end], key=lambda p: -p["score"])

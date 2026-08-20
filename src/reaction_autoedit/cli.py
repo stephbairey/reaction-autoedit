@@ -685,6 +685,7 @@ def select(
     withhold: Optional[bool] = typer.Option(None, help="withhold-the-climax (default: title config)"),
     trim_intro: Optional[bool] = typer.Option(None, "--trim-intro/--uncut-intro", help="cut the intro down to his monologue (default: title config, uncut)"),
     trim_outro: Optional[bool] = typer.Option(None, "--trim-outro/--uncut-outro", help="cut the outro down to his wrap-up (default: title config, uncut)"),
+    silence_cut: Optional[float] = typer.Option(None, help="cut silences longer than this many seconds out of intro/outro (default: title config, off)"),
     out: Optional[Path] = typer.Option(None, help="EDL path (default work/<name>/edl.json)"),
     root: Path = typer.Option(DEFAULT_ROOT),
 ):
@@ -700,6 +701,7 @@ def select(
         movie_frac=tc.movie_frac,
         trim_intro=tc.trim_intro if trim_intro is None else trim_intro,
         trim_outro=tc.trim_outro if trim_outro is None else trim_outro,
+        silence_cut_s=tc.silence_cut_s if silence_cut is None else silence_cut,
         layout_min_s=tc.layout_min_s,
     )
     an = Analysis.load(proj.analysis_dir, proj.state.probe.duration)

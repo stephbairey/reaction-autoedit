@@ -90,6 +90,7 @@ class TitleConfig(BaseModel):
     aspect_override: float | None = None      # movie aspect inside frame, e.g. 2.39
     risk_flag: Literal["green", "yellow", "red", "unknown"] = "unknown"
     show_title_card: bool = True              # show the title card between intro and film
+    silence_cut_s: float | None = None        # cut silences longer than this (seconds) out of the intro/outro; None = off
     trim_intro: bool = False                  # False (default) = intro uncut: everything before the film
     trim_outro: bool = False                  # False (default) = outro uncut: everything after the film
     title_card: str | None = None             # card image shown between intro and film (overrides reactor branding)

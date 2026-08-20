@@ -47,3 +47,21 @@ def test_select_without_withhold_has_no_cta():
     an = _synthetic()
     edl = select(an, SelectParams(runtime_target_s=10 * 60, withhold_climax=False), source="x.mp4")
     assert not any(s.kind == "cta" for s in edl.segments)
+
+
+def test_silence_cut_in_intro():
+    import numpy as np
+    from reaction_autoedit.select.selector import SelectParams, select
+
+    an = _synthetic()
+    # timeline: quiet 20–28 s inside the 0–60 s intro
+    an.wt = np.arange(0.5, 3600, 0.5)
+    an.wdb = np.full(an.wt.shape, -25.0)
+    an.wdb[(an.wt >= 20) & (an.wt <= 28)] = -60.0
+    an.wreact = np.zeros(an.wt.shape, dtype=bool)
+    edl = select(an, SelectParams(runtime_target_s=10 * 60, silence_cut_s=3.0), source="x.mp4")
+    intro = [s for s in edl.segments if s.kind == "intro"]
+    assert len(intro) == 2                       # split around the silence
+    assert intro[0].out < 21 and intro[1].in_ > 27
+    edl2 = select(_synthetic(), SelectParams(runtime_target_s=10 * 60), source="x.mp4")
+    assert len([s for s in edl2.segments if s.kind == "intro"]) == 1   # off by default
