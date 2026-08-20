@@ -611,6 +611,13 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
                 continue
         final.append(s)
     # chapters roughly every 10 min of output at story segments
+    seen_labels: set[str] = set()
+    for s in final:
+        if s.chapter and s.kind == "story":
+            if s.chapter in seen_labels:
+                s.chapter = None            # a beat announces itself once
+            else:
+                seen_labels.add(s.chapter)
     have_beat_chapters = any(s.chapter for s in final if s.kind == "story")
     out_t, last_ch, n = 0.0, -1e9, 1
     for s in final:
