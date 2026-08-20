@@ -178,6 +178,21 @@ src/reaction_autoedit/
   preflight/        Stage 0 + Stage 6 outcome table
 ```
 
+### Narrative beats (optional LLM pass)
+
+`rae beats <name>` sends the FILM dialogue to Claude and gets back a save-the-cat-style beat list
+(`analysis/beats.json`). The selector then anchors spine slices on important beats and names YouTube
+chapters after them — this is the answer to "the opening scenes are cut but not story-coherent".
+Needs `uv sync --extra llm` and `ANTHROPIC_API_KEY`. Works for any title in the backlog (no external
+"important scenes" dataset required; public ones only cover a fixed film list).
+
+### Title card
+
+`rae make-card <name> [--logo-url …] [--base your-channel-card.png]` composes the card shown between
+the intro and the film (movie clearlogo over your branding; TVDB artwork URLs work directly —
+automated TVDB lookup by title is planned once an API key is configured). Point
+`title_card` in the title config (or reactor `branding.title_card`) at the result.
+
 ## Roadmap
 
 1. ✅ **M1** — Stage 1 layout detection + Stage 4/5 render from a hand-written EDL.
@@ -185,3 +200,12 @@ src/reaction_autoedit/
 3. 🔄 **M3** — reaction peaks, music tiering (PANNs), scene cuts, dead air — implemented; validating.
 4. **M4** — Stage 3 two-budget selection with clip cap and withhold-the-climax; `--review` / `--auto`.
 5. **M5** — Stage 0 preflight, Stage 6 outcome loop, optional Real-ESRGAN pass for `reactor-large`.
+
+### Phase 2 (after the pipeline is proven on real uploads)
+
+- **GUI** — the end user shouldn't need a CLI. Thin desktop UI over the same commands: project list,
+  review screen (EDL timeline with per-segment accept/trim/layout toggles + preview player), style
+  settings (inset corner/size, border gradient colors/width, blur, banner schedule), render queue.
+- **Windows 11 installer** — bundled Python + ffmpeg (PyInstaller or briefcase), one-click install;
+  GPU auto-detected as today.
+- TVDB API integration for automatic clearlogo/title-card lookup per title.

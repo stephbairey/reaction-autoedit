@@ -237,6 +237,68 @@ def make_templates_cmd(
     console.print(f"[green]wrote[/] {e}\n[green]wrote[/] {lt}")
 
 
+@app.command()
+def beats(
+    name: str,
+    model: str = typer.Option("claude-sonnet-5", help="Anthropic model for the narrative pass"),
+    force: bool = False,
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Optional LLM pass: extract narrative beats from the film dialogue → analysis/beats.json.
+
+    Needs ANTHROPIC_API_KEY and `uv sync --extra llm`. The selector then anchors spine slices on
+    important beats and names chapters after them."""
+    from .select.beats import extract_beats
+
+    proj = Project.load(name, root)
+    sp = proj.analysis_dir / "speakers.json"
+    tp = proj.analysis_dir / "transcript.json"
+    src = sp if sp.exists() else tp
+    if not src.exists():
+        raise typer.BadParameter(f"no transcript yet — run `rae analyze {name}` first")
+    segs = json.loads(src.read_text(encoding="utf-8"))["segments"]
+    out = extract_beats(segs, proj.analysis_dir / "beats.json", model=model, force=force)
+    d = json.loads(out.read_text(encoding="utf-8"))
+    console.print(f"[green]wrote[/] {out} ({d['n']} beats)")
+    for b in d["beats"]:
+        m, s_ = divmod(int(b["t0"]), 60)
+        console.print(f"  {m:3d}:{s_:02d}  {b.get('importance', 0):.1f}  [{b.get('act','?'):13s}] {b['label']}")
+
+
+@app.command("make-card")
+def make_card(
+    name: str,
+    logo_url: Optional[str] = typer.Option(None, help="clearlogo PNG URL (e.g. TVDB artwork); downloaded once"),
+    logo: Optional[Path] = typer.Option(None, help="local clearlogo file (overrides --logo-url)"),
+    base: Optional[Path] = typer.Option(None, help="custom base card (channel branding) to place the logo on"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Compose the title card shown between intro and film (movie clearlogo over a base card).
+
+    The logo URL can be taken from TVDB (artwork type "clearlogo"); automated lookup via the TVDB
+    API is planned once an API key is configured (config key `tvdb_api_key`)."""
+    from urllib.request import Request, urlopen
+
+    from .assemble.templates import make_title_card
+
+    proj = Project.load(name, root)
+    tc = proj.title()
+    url = logo_url or tc.clearlogo_url
+    logo_path = logo
+    if logo_path is None and url:
+        logo_path = proj.root / "assets" / "clearlogo.png"
+        if not logo_path.exists():
+            logo_path.parent.mkdir(parents=True, exist_ok=True)
+            req = Request(url, headers={"User-Agent": "reaction-autoedit/0.1"})
+            with urlopen(req, timeout=30) as r:
+                logo_path.write_bytes(r.read())
+            console.print(f"downloaded logo → {logo_path}")
+    dest = proj.root / "assets" / "title_card.png"
+    make_title_card(dest, logo=logo_path, base=base, title=tc.title)
+    console.print(f"[green]wrote[/] {dest}")
+    console.print(f"reference it from the title config: \"title_card\": \"{dest.as_posix()}\" (or reactor branding.title_card)")
+
+
 @app.command("init-config")
 def init_config(out_dir: Path = typer.Option(Path("configs"))):
     """Write example reactor + title config files."""

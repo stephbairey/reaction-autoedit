@@ -1,11 +1,13 @@
 {
-  "title": "Example Movie",
-  "year": 1999,
-  "studio": "Example Studios",
+  "title": "Stand By Me",
+  "year": 1986,
+  "studio": "Columbia Pictures",
   "runtime_target_min": 55.0,
   "clip_cap_s": 7.0,
   "withhold_climax": true,
   "layout_min_s": 2.0,
   "aspect_override": null,
-  "risk_flag": "unknown"
+  "risk_flag": "unknown",
+  "clearlogo_url": "https://artworks.thetvdb.com/banners/v4/movie/347/clearlogo/6124dfc10ae4e.png",
+  "title_card": "work/sample/assets/title_card.png"
 }

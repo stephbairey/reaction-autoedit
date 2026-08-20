@@ -65,6 +65,15 @@ class Overlay(BaseModel):
     template: str | None = None        # defaults to reactor branding
 
 
+class Card(BaseModel):
+    """A full-frame still card (e.g. movie title card) inserted into the output timeline,
+    before the segment named by ``before_id`` (or at the very start if None). Fades in/out."""
+
+    before_id: str | None = None
+    template: str
+    dur: float = Field(3.5, gt=0)
+
+
 class Endcard(BaseModel):
     template: str | None = None        # defaults to reactor branding
     dur: float = Field(8.0, gt=0)
@@ -76,6 +85,7 @@ class EDL(BaseModel):
     target: RenderTarget = Field(default_factory=RenderTarget)
     segments: list[Segment] = Field(default_factory=list)
     overlays: list[Overlay] = Field(default_factory=list)
+    cards: list[Card] = Field(default_factory=list)
     endcard: Endcard | None = Field(default_factory=Endcard)
     meta: dict = Field(default_factory=dict)  # free-form: title, generator, params
 
@@ -85,9 +95,13 @@ class EDL(BaseModel):
         return sum(s.dur for s in self.segments)
 
     def offsets(self) -> list[float]:
-        """Output-timeline start time of each segment."""
-        out, t = [], 0.0
+        """Output-timeline start time of each segment (accounts for inserted cards)."""
+        card_before: dict[str | None, float] = {}
+        for c in self.cards:
+            card_before[c.before_id] = card_before.get(c.before_id, 0.0) + c.dur
+        out, t = [], card_before.get(None, 0.0)
         for s in self.segments:
+            t += card_before.get(s.id, 0.0)
             out.append(t)
             t += s.dur
         return out

@@ -94,8 +94,24 @@ def detect_peaks(
                 if EXCLAIM.search(s["text"]):
                     excl[(t >= s["start"] - 0.5) & (t <= s["end"] + 0.5)] = 1.0 if s.get("speaker") == "REACTOR" else 0.5
 
+    # startle: two flavours.
+    # (a) a loud non-reactor stretch followed by his motion/speech within ~3 s (crashes, scare chords)
+    # (b) a sudden JUMP in his face motion (gunshots and jump-scares are transients that RMS windows
+    #     miss entirely — but his flinch is unmistakable in the motion derivative)
+    startle = np.zeros(len(t))
+    if len(t) > 10:
+        loud_thr = np.percentile(db[db > -80], 88) if (db > -80).any() else 0.0
+        film_loud = ((db >= loud_thr) & ~reactor).astype(float)
+        k6 = int(3.0 / 0.5)
+        trail = np.convolve(film_loud, np.ones(k6), mode="full")[: len(t)]  # loudness in the last 3 s
+        response = np.maximum(motion / 2.0, np.clip(energy, 0, 1))
+        startle = np.clip(trail, 0, 1) * response
+        jump = np.zeros(len(t))
+        jump[1:] = np.clip(np.diff(motion), 0, None)          # positive motion-z acceleration
+        startle = startle + np.clip(jump - 0.8, 0, 3.0)       # only sharp jumps count
+
     comp = {"energy": 1.0 * energy, "motion": 0.8 * motion, "laugh": 2.5 * laugh, "shout": 2.5 * shout,
-            "gasp": 1.5 * gasp, "exclaim": 0.6 * excl}
+            "gasp": 1.5 * gasp, "exclaim": 0.6 * excl, "startle": 1.2 * startle}
     raw = sum(comp.values())
     k = int(round(2.5 / 0.5))
     kern = np.bartlett(2 * k + 1)
@@ -106,7 +122,7 @@ def detect_peaks(
     order = np.argsort(-sm)
     picked: list[int] = []
     gap = int(round(min_gap_s / 0.5))
-    floor = max(float(np.percentile(sm, 85)), 0.5)
+    floor = max(float(np.percentile(sm, 78)), 0.5)
     for i in order:
         if sm[i] < floor:
             break
@@ -131,7 +147,7 @@ def detect_peaks(
         seg = slice(a, b + 1)
         cs = {n: round(float(v[seg].mean()), 3) for n, v in comp.items()}
         kind_scores = {"laugh": cs["laugh"], "shout": cs["shout"], "gasp": cs["gasp"],
-                       "talk": cs["energy"] + cs["exclaim"], "visual": cs["motion"]}
+                       "talk": cs["energy"] + cs["exclaim"], "visual": cs["motion"], "startle": cs["startle"]}
         kind = max(kind_scores, key=kind_scores.get)
         text = " ".join(x for (s0, s1, x) in react_text if s0 <= t1 and s1 >= t0)
         peaks.append({"t": round(float(t[i]), 2), "t0": round(t0, 2), "t1": round(t1, 2),

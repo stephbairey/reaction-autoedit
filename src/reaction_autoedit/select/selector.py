@@ -36,7 +36,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import ReactorConfig, RenderTarget, TitleConfig
-from ..edl import EDL, Endcard, Overlay, Segment
+from ..edl import EDL, Card, Endcard, Overlay, Segment
 
 
 @dataclass
@@ -49,6 +49,10 @@ class Analysis:
     dead: list[dict]
     film_start: float
     film_end: float
+    wt: np.ndarray = field(default_factory=lambda: np.zeros(0))       # timeline window centres
+    wdb: np.ndarray = field(default_factory=lambda: np.zeros(0))      # per-window RMS dB
+    wreact: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
+    beats: list[dict] = field(default_factory=list)          # optional LLM narrative beats
 
     @classmethod
     def load(cls, adir: Path, duration: float) -> "Analysis":
@@ -58,13 +62,20 @@ class Analysis:
 
         sp = rd("speakers.json", {"segments": []})
         segs = sp.get("segments") or rd("transcript.json", {"segments": []}).get("segments", [])
+        tl = sp.get("timeline", [])
+        wt = np.asarray([w["t"] for w in tl], dtype=float)
+        wdb = np.asarray([w["db"] for w in tl], dtype=float)
+        key = sp.get("score_key", "sim")
+        thr = float(sp.get("threshold", 0.0))
+        wreact = np.asarray([(w.get(key) is not None and w[key] >= thr) for w in tl], dtype=bool)
         peaks = rd("peaks.json", {"peaks": []})["peaks"]
         music = rd("music.json", {"spans": []})["spans"]
         cuts = np.asarray(rd("scenes.json", {"cuts": []})["cuts"], dtype=float)
         dead = rd("deadair.json", {"spans": []})["spans"]
+        beats = rd("beats.json", {"beats": []})["beats"]
         fs, fe = _film_bounds(segs, cuts, duration)
         return cls(duration=duration, segments=segs, peaks=peaks, music=music, cuts=cuts, dead=dead,
-                   film_start=fs, film_end=fe)
+                   film_start=fs, film_end=fe, wt=wt, wdb=wdb, wreact=wreact, beats=beats)
 
     # ---- helpers ------------------------------------------------------------------------
     def song_overlap(self, a: float, b: float) -> float:
@@ -82,6 +93,53 @@ class Analysis:
         i = int(np.argmin(np.abs(self.cuts - t)))
         c = float(self.cuts[i])
         return c if abs(c - t) <= max_dist else t
+
+    def beat_at(self, t: float) -> dict | None:
+        for b in self.beats:
+            if b["t0"] <= t <= b["t1"]:
+                return b
+        return None
+
+    def quiet_point(self, t: float, radius: float = 1.2) -> float:
+        """Nearest time within ±radius where the mixed audio is locally quiet — cut there instead of
+        mid-dialogue. Falls back to t."""
+        if self.wt.size == 0:
+            return t
+        m = (self.wt >= t - radius) & (self.wt <= t + radius)
+        if not m.any():
+            return t
+        idx = np.where(m)[0]
+        best = idx[int(np.argmin(self.wdb[idx]))]
+        # only move if it is meaningfully quieter than the immediate point
+        here = self.wdb[int(np.argmin(np.abs(self.wt - t)))]
+        return float(self.wt[best]) if self.wdb[best] < here - 3.0 else t
+
+    def avoid_flash(self, a: float, b: float, guard: float = 0.6) -> tuple[float, float]:
+        """Nudge [a, b] so neither endpoint sits a few frames on the wrong side of a scene cut
+        (which reads as a 'flash' of the neighbouring scene)."""
+        if self.cuts.size:
+            after = self.cuts[(self.cuts > a) & (self.cuts < a + guard)]
+            if after.size:
+                a = float(after[0]) + 0.06        # start cleanly on the new scene
+            before = self.cuts[(self.cuts > b - guard) & (self.cuts < b)]
+            if before.size:
+                b = float(before[-1]) - 0.04      # end before the next scene sneaks in
+        return a, b
+
+    def loud_film_end(self, a: float, b: float) -> float | None:
+        """If [a, b] contains a loud non-reactor stretch (gunshot, crash, bat on mailbox …), return
+        when it ends — the movie should stay on screen until then."""
+        if self.wt.size == 0:
+            return None
+        m = (self.wt >= a) & (self.wt <= b)
+        if not m.any():
+            return None
+        loudness = self.wdb[m]
+        loud_thr = np.percentile(self.wdb[self.wdb > -80], 88)
+        loud = (loudness >= loud_thr) & ~self.wreact[m]
+        if not loud.any():
+            return None
+        return float(self.wt[m][np.where(loud)[0][-1]] + 0.8)
 
     def film_segments(self, a: float, b: float) -> list[dict]:
         return [s for s in self.segments if s.get("speaker") in ("FILM", "MIXED", None, "?") and s["end"] > a and s["start"] < b]
@@ -122,8 +180,8 @@ class SelectParams:
     withhold_n: int = 3
     withhold_last_frac: float = 0.25
     layout_min_s: float = 2.0
-    intro_s: float = 25.0
-    outro_s: float = 20.0
+    intro_max_s: float = 150.0         # intro runs until he stops talking / film starts (capped)
+    outro_max_s: float = 240.0         # outro runs to the end of his last remarks (capped)
     reaction_min_s: float = 3.0
     reaction_max_s: float = 14.0
     spine_slice_s: float = 7.0            # ≤ clip cap (clamped)
@@ -157,18 +215,25 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
     pieces: list[_Piece] = []
 
     # ---- intro / outro --------------------------------------------------------------------
+    # intro: from his first words to the end of his last pre-film sentence ("let's get into it"),
+    # bounded by the film start and a sanity cap.
     intro_segs = A.reactor_segments(0.0, A.film_start)
-    if intro_segs and P.intro_s > 0:
-        a = intro_segs[0]["start"]
-        b = min(a + P.intro_s, A.film_start)
-        pieces.append(_Piece(anchor=a, kind="intro", note="intro monologue (trimmed)",
-                             segs=[Segment(id="intro", **{"in": a}, out=b, layout="reactor-large", kind="intro", chapter="Intro")]))
+    if intro_segs and P.intro_max_s > 0:
+        a = max(0.0, intro_segs[0]["start"] - 0.4)
+        b = min(intro_segs[-1]["end"] + 0.6, A.film_start, a + P.intro_max_s)
+        if b - a >= 3.0:
+            pieces.append(_Piece(anchor=a, kind="intro", note="intro monologue (until he finishes)",
+                                 segs=[Segment(id="intro", **{"in": a}, out=b, layout="reactor-large", kind="intro",
+                                               chapter="Intro")]))
+    # outro: from his first post-film words to the end of his last (complete wrap-up).
     outro_segs = A.reactor_segments(A.film_end, A.duration)
-    if outro_segs and P.outro_s > 0:
-        b = min(outro_segs[-1]["end"], A.duration)
-        a = max(A.film_end, b - P.outro_s)
-        pieces.append(_Piece(anchor=a, kind="outro", note="outro (trimmed)",
-                             segs=[Segment(id="outro", **{"in": a}, out=b, layout="reactor-large", kind="outro", chapter="Final thoughts")]))
+    if outro_segs and P.outro_max_s > 0:
+        a = max(A.film_end, outro_segs[0]["start"] - 0.4)
+        b = min(outro_segs[-1]["end"] + 0.8, A.duration, a + P.outro_max_s)
+        if b - a >= 3.0:
+            pieces.append(_Piece(anchor=a, kind="outro", note="outro (complete)",
+                                 segs=[Segment(id="outro", **{"in": a}, out=b, layout="reactor-large", kind="outro",
+                                               chapter="Final thoughts")]))
 
     # ---- Budget B: peaks ------------------------------------------------------------------
     peaks = sorted([p for p in A.peaks if A.film_start <= p["t"] <= A.film_end], key=lambda p: -p["score"])
@@ -217,12 +282,17 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
             else:
                 break
         else:
-            # under: add peaks, then tighten gap
+            # under: add as many peaks as the shortfall allows, then tighten the spine gap
+            short = (P.runtime_target_s - (reactor.branding.endcard_duration or 0)) - total
             remaining = [pp for pp in peak_pieces if pp not in chosen_peaks]
             if remaining:
-                chosen_peaks.append(remaining[0])
+                for pp in remaining:
+                    if short <= 0:
+                        break
+                    chosen_peaks.append(pp)
+                    short -= pp.dur
             elif gap > 8:
-                gap *= 0.8
+                gap *= max(0.6, 1.0 - short / max(1.0, total))
             else:
                 break
     assert best is not None
@@ -238,6 +308,13 @@ def _peak_piece(p: dict, idx: int, A: Analysis, P: SelectParams) -> _Piece | Non
     t0, t1 = p["t0"], p["t1"]
     dur = min(max(t1 - t0, P.reaction_min_s), P.reaction_max_s)
     r_in = max(A.film_start, p["t"] - dur * 0.35)
+    # loud film event (gunshot, crash …) inside the trigger window → the movie stays on screen
+    # until the event ends; his reaction follows it.
+    loud_end = A.loud_film_end(r_in - 3.0, min(p["t"] + 2.0, t1))
+    note_extra = ""
+    if loud_end is not None and loud_end > r_in:
+        r_in = min(loud_end, p["t"] + 2.0)
+        note_extra = " — after loud film moment"
     r_out = min(A.film_end, r_in + dur)
     segs: list[Segment] = []
     song = A.song_overlap(r_in - P.clip_cap_s, r_in) > 0.5
@@ -245,10 +322,16 @@ def _peak_piece(p: dict, idx: int, A: Analysis, P: SelectParams) -> _Piece | Non
         m_out = r_in
         m_in = max(A.film_start, m_out - P.clip_cap_s)
         m_in = max(m_in, A.snap_to_cut(m_in, 1.5))
+        m_in, m_out = A.avoid_flash(m_in, m_out)
+        m_in = A.quiet_point(m_in)
         if m_out - m_in >= 2.0:
-            segs.append(Segment(id=f"p{idx:03d}m", **{"in": m_in}, out=m_out, layout="movie-large", kind="story",
-                                score=p["score"], note=f"trigger for peak {idx} ({p['kind']})"))
-    segs.append(Segment(id=f"p{idx:03d}r", **{"in": r_in}, out=r_out, layout="reactor-large", kind="reaction",
+            segs.append(Segment(id=f"p{idx:03d}m", **{"in": round(m_in, 2)}, out=round(m_out, 2), layout="movie-large",
+                                kind="story", score=p["score"], note=f"trigger for peak {idx} ({p['kind']}){note_extra}"))
+            r_in = m_out
+    r_out = A.quiet_point(r_out)
+    if r_out - r_in < P.reaction_min_s:
+        r_out = min(A.film_end, r_in + P.reaction_min_s)
+    segs.append(Segment(id=f"p{idx:03d}r", **{"in": round(r_in, 2)}, out=round(r_out, 2), layout="reactor-large", kind="reaction",
                         score=p["score"], note=f"peak {idx} ({p['kind']}, {p['score']:.2f})" + (" — song under it, no movie slice" if song else "")))
     return _Piece(anchor=segs[0].in_, segs=segs, kind="peak", score=p["score"], note=f"peak {idx}")
 
@@ -297,6 +380,9 @@ def _spine_at(anchor: float, k: int, A: Analysis, P: SelectParams, lo: float, un
         if A.in_dead(start):
             score *= 0.3
         score -= 0.5 * A.score_overlap(start, end) / P.spine_slice_s
+        beat = A.beat_at((start + end) / 2)
+        if beat:
+            score += 2.0 * float(beat.get("importance", 0.5))
         cands.append((score, start, end, s))
     if not cands:
         start = max(lo, A.snap_to_cut(anchor, 2.0))
@@ -305,8 +391,14 @@ def _spine_at(anchor: float, k: int, A: Analysis, P: SelectParams, lo: float, un
             return None
         cands.append((0.0, start, end, None))
     score, start, end, seg = max(cands, key=lambda c: c[0])
-    segs = [Segment(id=f"s{k:03d}m", **{"in": start}, out=end, layout="movie-large", kind="story", score=score,
-                    note="spine slice" + (f": {seg['text'][:60]}" if seg and seg.get("text") else ""))]
+    start, end = A.avoid_flash(start, end)
+    end = A.quiet_point(end)
+    if end - start < 2.5:
+        return None
+    beat = A.beat_at((start + end) / 2)
+    segs = [Segment(id=f"s{k:03d}m", **{"in": round(start, 2)}, out=round(end, 2), layout="movie-large", kind="story", score=score,
+                    chapter=(beat["label"] if beat and beat.get("importance", 0) >= 0.7 else None),
+                    note=("beat: " + beat["label"] + " — " if beat else "") + "spine slice" + (f": {seg['text'][:60]}" if seg and seg.get("text") else ""))]
     # short reactor cutaway if he speaks right after
     rs = A.reactor_segments(end, end + 8.0)
     if rs:
@@ -339,6 +431,19 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
             merged[-1] = merged[-1].model_copy(update={"out": s.out, "note": merged[-1].note + " + " + s.note})
         else:
             merged.append(s)
+    # anti flip-flop: drop a short segment sandwiched between two segments of the other layout
+    # (e.g. 1 s of movie between two reactor shots, or vice versa)
+    for _ in range(2):
+        drop = set()
+        for i in range(1, len(merged) - 1):
+            a, b, c = merged[i - 1], merged[i], merged[i + 1]
+            if b.kind in ("cta", "intro", "outro"):
+                continue
+            if a.layout == c.layout != b.layout and b.dur < max(P.layout_min_s, 2.2):
+                drop.add(i)
+        if not drop:
+            break
+        merged = [s for i, s in enumerate(merged) if i not in drop]
     # enforce clip cap for movie-large (split into cap-sized slices with a tiny reactor cutaway is
     # not possible without extra material → hard-trim to cap)
     final: list[Segment] = []
@@ -353,8 +458,17 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
                 continue
         final.append(s)
     # chapters roughly every 10 min of output at story segments
+    have_beat_chapters = any(s.chapter for s in final if s.kind == "story")
     out_t, last_ch, n = 0.0, -1e9, 1
     for s in final:
+        if have_beat_chapters:
+            if s.chapter is not None:
+                if out_t - last_ch < 240:   # chapters too dense — keep the first of the cluster
+                    s.chapter = None
+                else:
+                    last_ch = out_t
+            out_t += s.dur
+            continue
         if s.chapter is None and s.kind == "story" and out_t - last_ch >= 600:
             s.chapter = f"Part {n}"
             n += 1
@@ -365,15 +479,36 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
     # renumber ids chronologically but keep meaning
     for i, s in enumerate(final, 1):
         s.id = f"{i:03d}_{s.id}"
-    overlays = []
+    # transition: dip to black between intro and the film
+    for i, s in enumerate(final):
+        if i > 0 and final[i - 1].kind == "intro":
+            final[i] = s.model_copy(update={"transition": "xfade"})
+        if s.kind == "outro" and i > 0:
+            final[i] = s.model_copy(update={"transition": "xfade"})
+    # lower-third schedule: at CTAs, plus every `every_min` minutes, never two within `min_gap_min`
+    sched = reactor.branding.lower_third_schedule
     total = sum(s.dur for s in final)
-    ctas = [s for s in final if s.kind == "cta"]
+    shown: list[float] = []
+    overlays = []
     off = 0.0
     for s in final:
         if s.kind == "cta":
             overlays.append(Overlay(at=round(off, 2), dur=min(reactor.branding.lower_third_duration, s.dur)))
+            shown.append(off)
         off += s.dur
-    if not ctas and total > 600:
-        overlays.append(Overlay(at=round(total * 0.45, 2), dur=reactor.branding.lower_third_duration))
-    return EDL(source=source, target=RenderTarget(fps=P.fps), segments=final, overlays=overlays,
-               endcard=Endcard(dur=reactor.branding.endcard_duration), meta={"title": title.title})
+    tmark = sched.every_min * 60.0
+    while tmark < total - 120:
+        if all(abs(tmark - x) >= sched.min_gap_min * 60.0 for x in shown):
+            overlays.append(Overlay(at=round(tmark, 2), dur=reactor.branding.lower_third_duration))
+            shown.append(tmark)
+        tmark += sched.every_min * 60.0
+    overlays.sort(key=lambda o: o.at)
+    # title card between intro and film (image provided per title or via reactor branding)
+    card = title.title_card or reactor.branding.title_card
+    edl = EDL(source=source, target=RenderTarget(fps=P.fps), segments=final, overlays=overlays,
+              endcard=Endcard(dur=reactor.branding.endcard_duration), meta={"title": title.title})
+    if card:
+        intro_idx = next((i for i, s in enumerate(final) if s.kind == "intro"), None)
+        edl.cards = [Card(before_id=final[intro_idx + 1].id if intro_idx is not None and intro_idx + 1 < len(final) else None,
+                          template=card, dur=3.5)]
+    return edl

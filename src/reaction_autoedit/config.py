@@ -11,13 +11,21 @@ from pydantic import BaseModel, Field
 from .models import Geometry
 
 
+class BorderStyle(BaseModel):
+    """Gradient border drawn around insets (both the small PiP and the large reactor frame)."""
+
+    px: int = 4
+    color_from: str = "#9762FF"     # bottom-left
+    color_to: str = "#FF01F8"       # top-right
+
+
 class PipStyle(BaseModel):
     """Small overlay window used for the facecam in ``movie-large`` (and movie in ``reactor-large`` if enabled)."""
 
-    corner: Literal["top-left", "top-right", "bottom-left", "bottom-right"] = "bottom-right"
+    corner: Literal["top-left", "top-right", "bottom-left", "bottom-right"] = "bottom-left"  # reactor 'faces' the film
     width_frac: float = Field(0.24, gt=0.05, lt=0.6)   # fraction of output width
     margin_px: int = 24
-    border_px: int = 0
+    border: BorderStyle = Field(default_factory=BorderStyle)
     circle: bool | None = None                          # None → follow detected face shape
 
 
@@ -29,6 +37,12 @@ class ReactorLargeStyle(BaseModel):
     movie_pip: bool = False                                # also show the movie small in a corner
     sharpen: float = Field(0.4, ge=0.0, le=1.5)            # unsharp amount to fight upscale softness
     vignette: bool = True
+    border: BorderStyle = Field(default_factory=BorderStyle)
+
+
+class LowerThirdSchedule(BaseModel):
+    every_min: float = 20.0        # periodic display interval on the output timeline
+    min_gap_min: float = 10.0      # never show two within this distance (incl. CTA-triggered ones)
 
 
 class Branding(BaseModel):
@@ -36,6 +50,8 @@ class Branding(BaseModel):
     lower_third: str | None = "templates/lower_third.png"
     endcard_duration: float = 8.0
     lower_third_duration: float = 6.0
+    lower_third_schedule: LowerThirdSchedule = Field(default_factory=LowerThirdSchedule)
+    title_card: str | None = None   # per-title card image (movie logo over channel card); shown after the intro
 
 
 class ReactorConfig(BaseModel):
@@ -59,6 +75,8 @@ class TitleConfig(BaseModel):
     layout_min_s: float = Field(2.0, ge=0.5)   # hysteresis: min duration per layout
     aspect_override: float | None = None      # movie aspect inside frame, e.g. 2.39
     risk_flag: Literal["green", "yellow", "red", "unknown"] = "unknown"
+    title_card: str | None = None             # card image shown between intro and film (overrides reactor branding)
+    clearlogo_url: str | None = None          # e.g. TVDB clearlogo PNG; `rae make-card` fetches + composes
 
 
 class RenderTarget(BaseModel):

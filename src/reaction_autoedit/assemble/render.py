@@ -130,11 +130,14 @@ def _segment_cmd(p: _Plan, src: str, out: Path, geom: Geometry, target: RenderTa
     return args
 
 
-def _endcard_cmd(template: str, dur: float, out: Path, target: RenderTarget,
-                 profile: ComputeProfile, preview: bool) -> list[str]:
+def _card_cmd(template: str, dur: float, out: Path, target: RenderTarget,
+              profile: ComputeProfile, preview: bool, fade_out: bool = True) -> list[str]:
+    fades = f"fade=t=in:st=0:d=0.45"
+    if fade_out:
+        fades += f",fade=t=out:st={max(0.0, dur - 0.45):.2f}:d=0.45"
     graph = (f"[0:v]scale={target.w}:{target.h}:force_original_aspect_ratio=decrease,"
              f"pad={target.w}:{target.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
-             f"fade=t=in:st=0:d=0.5,fps={target.fps},format=yuv420p[v]")
+             f"{fades},fps={target.fps},format=yuv420p[v]")
     return (["-loop", "1", "-framerate", f"{target.fps}", "-t", f"{dur:.3f}", "-i", template,
              "-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=48000:cl=stereo",
              "-filter_complex", graph, "-map", "[v]", "-map", "1:a"]
@@ -193,10 +196,26 @@ def render(
             key = hashlib.sha1(f"{tpl}{edl.endcard.dur}{target}{profile.encoder_args(preview)}".encode()).hexdigest()[:10]
             endcard_clip = tmp / f"endcard_{key}.mp4"
             if force or not endcard_clip.exists():
-                tasks.append((len(plans), endcard_clip, _endcard_cmd(tpl, edl.endcard.dur, endcard_clip, target, profile, preview)))
+                tasks.append((len(plans), endcard_clip, _card_cmd(tpl, edl.endcard.dur, endcard_clip, target, profile, preview, fade_out=False)))
         else:
             warnings.append(f"endcard template missing ({tpl}); skipped")
             console.print(f"[yellow]warn:[/] endcard template missing ({tpl}); skipped")
+
+    # full-frame cards (e.g. movie title card after the intro)
+    card_inserts: list[tuple[int, Path]] = []      # (index into clip_paths to insert BEFORE, clip)
+    for ci, card in enumerate(edl.cards):
+        if not Path(card.template).exists():
+            warnings.append(f"card template missing ({card.template}); skipped")
+            console.print(f"[yellow]warn:[/] card template missing ({card.template}); skipped")
+            continue
+        pos = 0
+        if card.before_id is not None:
+            pos = next((i for i, pl in enumerate(plans) if pl.seg.id == card.before_id), 0)
+        key = hashlib.sha1(f"{card.template}{card.dur}{target}{profile.encoder_args(preview)}".encode()).hexdigest()[:10]
+        clip = tmp / f"card_{ci}_{key}.mp4"
+        card_inserts.append((pos, clip))
+        if force or not clip.exists():
+            tasks.append((len(plans) + 1 + ci, clip, _card_cmd(card.template, card.dur, clip, target, profile, preview)))
 
     console.print(f"rendering {len(plans)} segments ({len(tasks)} to encode, {len(plans) - len([t for t in tasks if t[0] < len(plans)])} cached) "
                   f"→ {target.w}x{target.h}@{target.fps:g} via {profile.video_encoder}, {jobs} jobs")
@@ -217,8 +236,14 @@ def render(
 
     # concat
     lst = tmp / "concat.txt"
+    seq: list[Path] = list(clip_paths)
+    for pos, clip in sorted(card_inserts, key=lambda x: -x[0]):
+        if clip.exists():
+            seq.insert(pos, clip)
+    if endcard_clip:
+        seq.append(endcard_clip)
     with lst.open("w", encoding="utf-8") as fh:
-        for c in clip_paths + ([endcard_clip] if endcard_clip else []):
+        for c in seq:
             fh.write(f"file '{c.resolve().as_posix()}'\n")
     ffmpeg.run(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", "-movflags", "+faststart", "-y", str(out)])
 
@@ -228,7 +253,7 @@ def render(
     chapters = package.write_chapters(edl, out.with_suffix(".chapters.txt"))
     desc = package.write_description(edl, reactor, title, out.with_suffix(".description.txt"))
     package.write_midrolls(edl, out.with_suffix(".midrolls.txt"))
-    total = edl.duration + (edl.endcard.dur if endcard_clip and edl.endcard else 0.0)
+    total = edl.duration + (edl.endcard.dur if endcard_clip and edl.endcard else 0.0) + sum(c.dur for c in edl.cards)
     if not keep_tmp:
         shutil.rmtree(tmp, ignore_errors=True)
     console.print(f"[green]done:[/] {out} ({total/60:.1f} min)")

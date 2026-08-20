@@ -11,7 +11,7 @@ Every builder returns a filtergraph string that consumes ``[0:v]`` and produces 
 
 from __future__ import annotations
 
-from ..config import PipStyle, ReactorLargeStyle, RenderTarget
+from ..config import BorderStyle, PipStyle, ReactorLargeStyle, RenderTarget
 from ..models import Geometry, Rect
 
 
@@ -37,6 +37,18 @@ def _corner_xy(corner: str, w_expr: str, h_expr: str, target: RenderTarget, marg
     return x, y
 
 
+def _gradient_border(inner_label: str, out_label: str, w: int, h: int, border: BorderStyle, idx: str) -> str:
+    """Wrap stream ``inner_label`` (size w×h) in a ``border.px`` gradient frame (bottom-left →
+    top-right), producing ``out_label`` of size (w+2b)×(h+2b)."""
+    b = border.px
+    if b <= 0:
+        return f"{inner_label}null{out_label}"
+    W, H = w + 2 * b, h + 2 * b
+    c0, c1 = border.color_from.lstrip("#"), border.color_to.lstrip("#")
+    return (f"gradients=s={W}x{H}:c0=0x{c0}:c1=0x{c1}:x0=0:y0={H}:x1={W}:y1=0:n=2,format=yuva420p[grad{idx}];"
+            f"[grad{idx}]{inner_label}overlay={b}:{b}:format=auto{out_label}")
+
+
 def _circle_mask() -> str:
     """Make the current stream's alpha a centred circle (for circular facecams)."""
     return ("format=yuva420p,"
@@ -57,10 +69,10 @@ def movie_large(geom: Geometry, target: RenderTarget, pip: PipStyle) -> str:
     fchain = f"[f0]{face.ffmpeg_crop()},scale={pw}:{ph}:flags=bicubic"
     if circle:
         fchain += "," + _circle_mask()
-    if pip.border_px > 0 and not circle:
-        b = pip.border_px
-        fchain += f",pad=iw+{2*b}:ih+{2*b}:{b}:{b}:color=white"
-    parts.append(fchain + "[pip]")
+        parts.append(fchain + "[pip]")
+    else:
+        parts.append(fchain + "[pipraw]")
+        parts.append(_gradient_border("[pipraw]", "[pip]", pw, ph, pip.border, "p"))
     x, y = _corner_xy(pip.corner, "overlay_w", "overlay_h", target, pip.margin_px)
     parts.append(f"[bg][pip]overlay={x}:{y}:format=auto,format=yuv420p[vout]")
     return ";".join(parts)
@@ -98,7 +110,10 @@ def reactor_large(geom: Geometry, target: RenderTarget, style: ReactorLargeStyle
         fchain += f",unsharp=5:5:{style.sharpen:.2f}:5:5:0"
     if geom.face.shape == "circle":
         fchain += "," + _circle_mask()
-    parts.append(fchain + "[face]")
+        parts.append(fchain + "[face]")
+    else:
+        parts.append(fchain + "[faceraw]")
+        parts.append(_gradient_border("[faceraw]", "[face]", fw, fh, style.border, "f"))
     parts.append(f"[bg][face]overlay=(W-w)/2:(H-h)/2:format=auto[v1]")
 
     if style.movie_pip:

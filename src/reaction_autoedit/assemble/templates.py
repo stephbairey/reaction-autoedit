@@ -49,3 +49,45 @@ def make_lower_third(path: str | Path, *, text: str = "FULL REACTION ON PATREON"
     p.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(p), img)
     return p
+
+
+def make_title_card(out: str | Path, *, logo: str | Path | None = None, base: str | Path | None = None,
+                    title: str = "", subtitle: str = "abridged reaction",
+                    w: int = 1920, h: int = 1080) -> Path:
+    """Compose the between-intro-and-film title card: user-provided base card (channel branding) or a
+    dark gradient, with the movie clearlogo centred (alpha respected) or the title as text."""
+    if base is not None and Path(base).exists():
+        img = cv2.imread(str(base), cv2.IMREAD_COLOR)
+        img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+    else:
+        img = np.zeros((h, w, 3), np.uint8)
+        for y in range(h):  # subtle vertical gradient
+            v = 18 + int(14 * y / h)
+            img[y, :] = (v, v - 2, v - 4)
+        cv2.rectangle(img, (60, 60), (w - 60, h - 60), (70, 65, 60), 2)
+    placed_logo = False
+    if logo is not None and Path(logo).exists():
+        lg = cv2.imread(str(logo), cv2.IMREAD_UNCHANGED)
+        if lg is not None:
+            lw = int(w * 0.55)
+            lh = int(lg.shape[0] * lw / lg.shape[1])
+            if lh > h * 0.45:
+                lh = int(h * 0.45)
+                lw = int(lg.shape[1] * lh / lg.shape[0])
+            lg = cv2.resize(lg, (lw, lh), interpolation=cv2.INTER_AREA)
+            x0, y0 = (w - lw) // 2, int(h * 0.42) - lh // 2
+            roi = img[y0:y0 + lh, x0:x0 + lw]
+            if lg.shape[2] == 4:
+                a = (lg[:, :, 3:4].astype(np.float32) / 255.0)
+                img[y0:y0 + lh, x0:x0 + lw] = (lg[:, :, :3] * a + roi * (1 - a)).astype(np.uint8)
+            else:
+                img[y0:y0 + lh, x0:x0 + lw] = lg[:, :, :3]
+            placed_logo = True
+    if not placed_logo and title:
+        _text(img, title.upper(), int(h * 0.45), 2.6, (245, 245, 245), 5)
+    if subtitle:
+        _text(img, subtitle, int(h * 0.62) if placed_logo else int(h * 0.58), 1.1, (185, 185, 185), 2)
+    p = Path(out)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(p), img)
+    return p
