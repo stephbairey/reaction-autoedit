@@ -168,6 +168,52 @@ def set_layout(
 
 
 # --------------------------------------------------------------------------- EDL
+def _parse_ts(v: str) -> float:
+    """'5227', '87:07' or '1:27:07' → seconds."""
+    parts = [float(x) for x in v.split(":")]
+    t = 0.0
+    for x in parts:
+        t = t * 60 + x
+    return t
+
+
+@app.command("set-film-bounds")
+def set_film_bounds(
+    name: str,
+    start: str = typer.Option(..., help="film start (seconds or M:SS / H:MM:SS)"),
+    end: str = typer.Option(..., help="film end / credits start"),
+    from_preview: bool = typer.Option(False, help="interpret times as timestamps in the LAST PREVIEW render (they get mapped back to source time through its EDL, bumper and card included)"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """Manually pin where the film starts and ends inside the recording (beats auto-detection)."""
+    proj = Project.load(name, root)
+    a, b = _parse_ts(start), _parse_ts(end)
+    if from_preview:
+        a, b = _preview_to_source(proj, a), _preview_to_source(proj, b)
+    if not (0 <= a < b):
+        raise typer.BadParameter(f"bad bounds {a:.1f}..{b:.1f}")
+    proj.state.film_bounds = [round(a, 2), round(b, 2)]
+    proj.save()
+    console.print(f"[green]film bounds set[/]: {a/60:.2f} → {b/60:.2f} min (source). Re-run `rae select {name}`.")
+
+
+def _preview_to_source(proj: Project, pt: float) -> float:
+    """Map an output-timeline timestamp of the last preview render back to source seconds."""
+    sidecars = sorted(proj.renders_dir.glob("*_preview.edl.json"))
+    if not sidecars:
+        raise typer.BadParameter("no preview render sidecar found; render a preview first or omit --from-preview")
+    e = EDL.load(sidecars[-1])
+    head = 0.0
+    ob = proj.reactor().branding.opening_bumper
+    if ob and Path(ob).exists():
+        head = ffmpeg.probe(ob).duration
+    offs = [o + head for o in e.offsets()]
+    for seg, off in zip(reversed(e.segments), reversed(offs)):
+        if pt >= off:
+            return min(seg.out, seg.in_ + (pt - off))
+    return max(0.0, pt - head)
+
+
 @app.command("edl-init")
 def edl_init(name: str, out: Optional[Path] = None, root: Path = typer.Option(DEFAULT_ROOT)):
     """Write a small starter EDL (both layouts, a lower third, chapters) to work/<name>/edl.json."""
@@ -604,7 +650,10 @@ def select(
     an = Analysis.load(proj.analysis_dir, proj.state.probe.duration)
     if not an.peaks:
         console.print("[yellow]no peaks.json — run `rae analyze` first (selection will be spine-only)[/]")
-    edl = do_select(an, params, source=str(proj.source), reactor=proj.reactor(), title=tc)
+    fb = tuple(proj.state.film_bounds) if proj.state.film_bounds else None
+    if fb:
+        console.print(f"[dim]using manual film bounds {fb[0]/60:.2f} → {fb[1]/60:.2f} min[/]")
+    edl = do_select(an, params, source=str(proj.source), reactor=proj.reactor(), title=tc, film_bounds=fb)
     dest = out or proj.edl_path
     edl.save(dest)
     proj.mark("select", path=str(dest), duration=edl.duration, segments=len(edl.segments))

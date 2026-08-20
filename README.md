@@ -148,6 +148,19 @@ plain JSON, meant to be edited by hand in `--review` mode:
 - `transition`: `cut` or `xfade` (rendered as a short dip-to-black into the segment).
 - `chapter`: starts a YouTube chapter. `rae edl-check` warns about clip-cap violations, ordering, out-of-range times.
 
+### Film bounds
+
+Where the film starts and ends inside the recording is auto-detected (sustained activity in the
+movie region, snapped to scene cuts; speech-based fallback). When the heuristic misses — animated
+menus, studio logos, credits over imagery — pin it manually; timestamps can be given **as seen in
+the last preview render**, which is usually how you find them:
+
+```bash
+rae set-film-bounds mymovie --start 1:36 --end 46:54 --from-preview   # preview-timeline times
+rae set-film-bounds mymovie --start 90.8 --end 5227                    # or raw source seconds
+rae select mymovie && rae render mymovie --preview
+```
+
 ### Intro and outro
 
 The intro (everything before the film) and outro (everything after) are shown **full-frame and uncut

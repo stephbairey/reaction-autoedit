@@ -33,6 +33,7 @@ class ProjectState(BaseModel):
     geometry: Geometry | None = None
     reactor_config: str | None = None   # path to configs/reactors/*.json
     title_config: str | None = None
+    film_bounds: list[float] | None = None   # manual [film_start, film_end] in source seconds
     stages: dict[str, Any] = Field(default_factory=dict)  # stage name → status/metadata
 
 

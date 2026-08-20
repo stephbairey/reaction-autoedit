@@ -70,10 +70,13 @@ class Analysis:
         wreact = np.asarray([(w.get(key) is not None and w[key] >= thr) for w in tl], dtype=bool)
         peaks = rd("peaks.json", {"peaks": []})["peaks"]
         music = rd("music.json", {"spans": []})["spans"]
-        cuts = np.asarray(rd("scenes.json", {"cuts": []})["cuts"], dtype=float)
+        scenes_d = rd("scenes.json", {"cuts": []})
+        cuts = np.asarray(scenes_d["cuts"], dtype=float)
+        movie_change = np.asarray(scenes_d.get("movie_change", []), dtype=np.float32)
+        sig_fps = float(scenes_d.get("fps", 5.0))
         dead = rd("deadair.json", {"spans": []})["spans"]
         beats = rd("beats.json", {"beats": []})["beats"]
-        fs, fe = _film_bounds(segs, cuts, duration)
+        fs, fe = _film_bounds(segs, cuts, duration, movie_change=movie_change, sig_fps=sig_fps)
         return cls(duration=duration, segments=segs, peaks=peaks, music=music, cuts=cuts, dead=dead,
                    film_start=fs, film_end=fe, wt=wt, wdb=wdb, wreact=wreact, beats=beats)
 
@@ -148,9 +151,40 @@ class Analysis:
         return [s for s in self.segments if s.get("speaker") == "REACTOR" and s["end"] > a and s["start"] < b]
 
 
-def _film_bounds(segs: list[dict], cuts: np.ndarray, duration: float) -> tuple[float, float]:
-    """Where does the film start/end inside the recording? First/last FILM-tagged speech, sanity-bounded
-    by scene cuts. Falls back to 5 % / 97 % of the duration."""
+def _film_bounds(segs: list[dict], cuts: np.ndarray, duration: float,
+                 movie_change: np.ndarray | None = None, sig_fps: float = 5.0) -> tuple[float, float]:
+    """Where does the film start/end inside the recording?
+
+    Primary cue (when video signals exist): the longest *sustained* activity run in the movie region —
+    browsing/menus produce bursts, a playing film produces near-continuous change; boundaries are
+    snapped to scene cuts. Fallback: first/last sustained FILM-tagged speech. Manual override
+    (``rae set-film-bounds``) beats both — studio logos, credits-over-imagery and animated menus can
+    fool any heuristic."""
+    if movie_change is not None and movie_change.size > sig_fps * 600:
+        active = (movie_change > 0.35).astype(np.float32)
+        k = int(90 * sig_fps)
+        frac = np.convolve(active, np.ones(k) / k, mode="same")
+        on = frac > 0.65
+        runs, st = [], None
+        for i, f in enumerate(on):
+            if f and st is None:
+                st = i
+            elif not f and st is not None:
+                runs.append((st, i)); st = None
+        if st is not None:
+            runs.append((st, len(on)))
+        if runs:
+            a, b = max(runs, key=lambda r: r[1] - r[0])
+            fs, fe = a / sig_fps, b / sig_fps
+            if fe - fs > 0.4 * duration:                 # plausible feature film
+                if cuts.size:
+                    ca = cuts[(cuts > fs - 20) & (cuts < fs + 8)]
+                    if ca.size:
+                        fs = float(ca[0])                # snap start to the first nearby cut (logo pop-on)
+                    cb = cuts[(cuts > fe - 60) & (cuts < fe + 5)]
+                    if cb.size:
+                        fe = float(cb[0])                # credits: first cut at the end of the run
+                return max(0.0, fs), min(duration, fe)
     film = sorted((s for s in segs if s.get("speaker") == "FILM"), key=lambda s: s["start"])
     fs = fe = None
     # sustained: a FILM segment followed by ≥3 more FILM segments within 90 s (and mirrored for the end)
@@ -209,8 +243,11 @@ class _Piece:
 
 
 def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: ReactorConfig | None = None,
-           title: TitleConfig | None = None) -> EDL:
+           title: TitleConfig | None = None, film_bounds: tuple[float, float] | None = None) -> EDL:
     A, P = analysis, params
+    if film_bounds is not None:
+        A.film_start, A.film_end = film_bounds
+        A.notes = getattr(A, "notes", []) + ["film bounds set manually"]
     P.spine_slice_s = min(P.spine_slice_s, P.clip_cap_s)
     reactor = reactor or ReactorConfig()
     title = title or TitleConfig()
@@ -525,5 +562,5 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
     if card:
         intro_idx = next((i for i, s in enumerate(final) if s.kind == "intro"), None)
         edl.cards = [Card(before_id=final[intro_idx + 1].id if intro_idx is not None and intro_idx + 1 < len(final) else None,
-                          template=card, dur=3.5)]
+                          template=card, dur=3.0)]
     return edl
