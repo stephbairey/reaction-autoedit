@@ -156,12 +156,20 @@ def _card_cmd(template: str, dur: float, out: Path, target: RenderTarget,
 
 def _bumper_cmd(src: str, out: Path, target: RenderTarget, profile: ComputeProfile, preview: bool) -> list[str]:
     """Re-encode a branded bumper video to the exact concat parameters (any input size/fps/audio)."""
+    info = ffmpeg.probe(src)
+    dur = info.duration
     graph = (f"[0:v]scale={target.w}:{target.h}:force_original_aspect_ratio=decrease:flags=bicubic,"
-             f"pad={target.w}:{target.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={target.fps},format=yuv420p[v];"
-             f"[0:a]aresample=48000,apad[a]")
-    return (["-i", src, "-filter_complex", graph, "-map", "[v]", "-map", "[a]"]
+             f"pad={target.w}:{target.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={target.fps},format=yuv420p[v]")
+    if info.audio:
+        graph += ";[0:a]aresample=48000,apad[a]"
+        amap = ["-map", "[a]"]
+        args = ["-i", src]
+    else:
+        args = ["-i", src, "-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
+        amap = ["-map", "1:a"]
+    return (args + ["-filter_complex", graph, "-map", "[v]"] + amap
             + profile.encoder_args(preview) + ["-pix_fmt", "yuv420p", "-g", str(int(target.fps * 2))]
-            + AUDIO_ARGS + ["-shortest", "-y", str(out)])
+            + AUDIO_ARGS + ["-t", f"{dur:.3f}", "-y", str(out)])
 
 
 def render(
