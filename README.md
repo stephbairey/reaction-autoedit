@@ -228,4 +228,5 @@ automated TVDB lookup by title is planned once an API key is configured). Point
   settings (inset corner/size, border gradient colors/width, blur, banner schedule), render queue.
 - **Windows 11 installer** — bundled Python + ffmpeg (PyInstaller or briefcase), one-click install;
   GPU auto-detected as today.
-- TVDB API integration for automatic clearlogo/title-card lookup per title.
+- TVDB API integration for automatic clearlogo/title-card lookup per title. ✅ (done in phase 1)
+- The GUI binds to the settings inventory in [docs/settings.md](docs/settings.md).

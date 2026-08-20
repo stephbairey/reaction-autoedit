@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,8 +41,17 @@ class ReactorLargeStyle(BaseModel):
 
 
 class LowerThirdSchedule(BaseModel):
-    every_min: float = 20.0        # periodic display interval on the output timeline
+    """When the 'full reaction on Patreon' banner appears (output-timeline).
+
+    Periodic mode: first at ``start_min``, then every ``every_min``. Explicit mode: ``at_min`` is a
+    list of minute marks and replaces the periodic schedule entirely. In both modes withheld-climax
+    CTA moments also show the banner, and ``min_gap_min`` suppresses any two showings closer than
+    that."""
+
+    start_min: float = 20.0        # first periodic display
+    every_min: float = 20.0        # periodic display interval
     min_gap_min: float = 10.0      # never show two within this distance (incl. CTA-triggered ones)
+    at_min: list[float] | None = None   # explicit minute marks (replaces the periodic schedule)
 
 
 class Branding(BaseModel):
@@ -50,6 +59,7 @@ class Branding(BaseModel):
     lower_third: str | None = "templates/lower_third.png"
     endcard_duration: float = 8.0
     lower_third_duration: float = 6.0
+    resolution: str = "1080"        # default final render resolution: 480 | 720 | 1080
     lower_third_schedule: LowerThirdSchedule = Field(default_factory=LowerThirdSchedule)
     title_card: str | None = None        # composed per-title card (movie logo over base); shown after the intro
     title_card_base: str | None = None   # the channel's base card the logo gets composed onto
@@ -78,6 +88,7 @@ class TitleConfig(BaseModel):
     layout_min_s: float = Field(2.0, ge=0.5)   # hysteresis: min duration per layout
     aspect_override: float | None = None      # movie aspect inside frame, e.g. 2.39
     risk_flag: Literal["green", "yellow", "red", "unknown"] = "unknown"
+    show_title_card: bool = True              # show the title card between intro and film
     trim_intro: bool = False                  # False (default) = intro uncut: everything before the film
     trim_outro: bool = False                  # False (default) = outro uncut: everything after the film
     title_card: str | None = None             # card image shown between intro and film (overrides reactor branding)
@@ -89,9 +100,19 @@ class RenderTarget(BaseModel):
     h: int = 1080
     fps: float = 30.0
 
+    PRESETS: ClassVar[dict[str, tuple[int, int]]] = {"480": (854, 480), "720": (1280, 720), "1080": (1920, 1080)}
+
+    @classmethod
+    def preset(cls, name: str, fps: float = 30.0) -> "RenderTarget":
+        key = str(name).lower().rstrip("p")
+        if key not in cls.PRESETS:
+            raise ValueError(f"unknown resolution {name!r}; choose from {list(cls.PRESETS)}")
+        w, h = cls.PRESETS[key]
+        return cls(w=w, h=h, fps=fps)
+
     @classmethod
     def preview(cls) -> "RenderTarget":
-        return cls(w=854, h=480, fps=30.0)
+        return cls.preset("480")
 
 
 def _load(path: str | Path, model):

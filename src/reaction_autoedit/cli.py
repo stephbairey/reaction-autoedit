@@ -245,6 +245,7 @@ def render(
     edl: Optional[Path] = typer.Option(None, "--edl", help="EDL to render (default work/<name>/edl.json)"),
     out: Optional[Path] = typer.Option(None, "--out", "-o"),
     preview: bool = typer.Option(False, help="fast 480p preview"),
+    resolution: Optional[str] = typer.Option(None, help="final render resolution: 480 | 720 | 1080 (default: reactor branding, 1080)"),
     jobs: Optional[int] = typer.Option(None, help="parallel segment encodes"),
     force: bool = typer.Option(False, help="ignore cached intermediates"),
     encoder: Optional[str] = typer.Option(None, help="force ffmpeg video encoder (libx264, h264_nvenc, …)"),
@@ -259,6 +260,11 @@ def render(
     if not edl_path.exists():
         raise typer.BadParameter(f"no EDL at {edl_path} (run `rae edl-init {name}` or pass --edl)")
     e = EDL.load(edl_path)
+    if not preview:
+        from .config import RenderTarget
+
+        res = resolution or proj.reactor().branding.resolution
+        e.target = RenderTarget.preset(res, fps=e.target.fps)
     if not Path(e.source).exists():
         console.print(f"[yellow]EDL source {e.source} missing; using project source[/]")
         e.source = str(proj.source)

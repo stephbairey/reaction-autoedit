@@ -548,15 +548,20 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
             overlays.append(Overlay(at=round(off, 2), dur=min(reactor.branding.lower_third_duration, s.dur)))
             shown.append(off)
         off += s.dur
-    tmark = sched.every_min * 60.0
-    while tmark < total - 120:
-        if all(abs(tmark - x) >= sched.min_gap_min * 60.0 for x in shown):
+    if sched.at_min is not None:
+        marks = [m * 60.0 for m in sched.at_min]
+    else:
+        marks, tmark = [], sched.start_min * 60.0
+        while tmark < total - 120:
+            marks.append(tmark)
+            tmark += sched.every_min * 60.0
+    for tmark in marks:
+        if tmark < total - 30 and all(abs(tmark - x) >= sched.min_gap_min * 60.0 for x in shown):
             overlays.append(Overlay(at=round(tmark, 2), dur=reactor.branding.lower_third_duration))
             shown.append(tmark)
-        tmark += sched.every_min * 60.0
     overlays.sort(key=lambda o: o.at)
     # title card between intro and film (image provided per title or via reactor branding)
-    card = title.title_card or reactor.branding.title_card
+    card = (title.title_card or reactor.branding.title_card) if title.show_title_card else None
     edl = EDL(source=source, target=RenderTarget(fps=P.fps), segments=final, overlays=overlays,
               endcard=Endcard(dur=reactor.branding.endcard_duration), meta={"title": title.title})
     if card:
