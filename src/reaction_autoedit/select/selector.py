@@ -54,6 +54,7 @@ class Analysis:
     wreact: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
     beats: list[dict] = field(default_factory=list)          # narrative beats (t0,t1,label,importance[,priority])
     key_lines: list[dict] = field(default_factory=list)      # must/should dialogue lines (t0,t1,heard,beat,priority)
+    moments: list[dict] = field(default_factory=list)        # fan-favorite moments (t0,t1,label,priority)
 
     @classmethod
     def load(cls, adir: Path, duration: float) -> "Analysis":
@@ -80,12 +81,14 @@ class Analysis:
         if narr:
             beats = narr.get("beats", [])
             key_lines = narr.get("key_lines", [])
+            moments = narr.get("moments", [])
         else:
             beats = rd("beats.json", {"beats": []})["beats"]
             key_lines = []
+            moments = []
         fs, fe = _film_bounds(segs, cuts, duration, movie_change=movie_change, sig_fps=sig_fps)
         return cls(duration=duration, segments=segs, peaks=peaks, music=music, cuts=cuts, dead=dead,
-                   film_start=fs, film_end=fe, wt=wt, wdb=wdb, wreact=wreact, beats=beats, key_lines=key_lines)
+                   film_start=fs, film_end=fe, wt=wt, wdb=wdb, wreact=wreact, beats=beats, key_lines=key_lines, moments=moments)
 
     # ---- helpers ------------------------------------------------------------------------
     def song_overlap(self, a: float, b: float) -> float:
@@ -109,6 +112,30 @@ class Analysis:
             if b["t0"] <= t <= b["t1"]:
                 return b
         return None
+
+    def complete_dialog(self, t: float, max_extend: float = 2.2) -> float:
+        """If a FILM transcript line straddles ``t`` and ends within ``max_extend`` s, extend to just
+        after it — lines finish before we cut (guardrail from review: no mid-sentence cuts)."""
+        best = t
+        for seg in self.segments:
+            if seg.get("speaker") == "REACTOR":
+                continue
+            if seg["start"] < t < seg["end"] and seg["end"] - t <= max_extend:
+                best = max(best, seg["end"] + 0.15)
+            elif seg["start"] >= t + max_extend:
+                break
+        return best
+
+    def voiced_reactor_span(self, a: float, b: float) -> tuple[float, float] | None:
+        """The span within [a, b] where the reactor is actually talking/laughing (timeline windows
+        at/above threshold). None if he never speaks there."""
+        if self.wt.size == 0:
+            return None
+        m = (self.wt >= a) & (self.wt <= b) & self.wreact
+        if not m.any():
+            return None
+        ts = self.wt[m]
+        return float(ts[0] - 0.5), float(ts[-1] + 0.7)
 
     def keep_spans_without_silence(self, a: float, b: float, min_silence: float,
                                    pad: float = 0.35, min_keep: float = 1.0) -> list[tuple[float, float]]:
@@ -266,6 +293,10 @@ class SelectParams:
     spine_cutaway_s: float = 3.0
     max_gap_s: float = 75.0            # film seconds allowed without any coverage (tuned by runtime loop)
     split_cutaway_s: float = 1.8       # reactor-cam visual during must-scene splits (film audio continues)
+    min_shot_s: float = 2.0            # every movie shot on screen at least this long (viewer must register it)
+    jump_skip_s: float = 1.6           # source-time skip forced between contiguous movie slices (fingerprint breaker)
+    opening_grace_s: float = 600.0     # first N film-seconds: denser story, reactions only when he speaks
+    visual_reaction_max_s: float = 4.0 # cap for reactions where he never speaks
     tolerance_s: float = 60.0
     fps: float = 30.0
 
@@ -338,7 +369,10 @@ def select(analysis: Analysis, params: SelectParams, *, source: str, reactor: Re
                                            note=note) for k, (x, y) in enumerate(spans)]))
 
     # ---- Budget B: peaks ------------------------------------------------------------------
-    peaks = sorted([p for p in A.peaks if A.film_start <= p["t"] <= A.film_end], key=lambda p: -p["score"])
+    # audience-preferred reaction kinds jump the queue: startles (shared surprise) and laughs travel
+    kind_bonus = {"startle": 0.8, "laugh": 0.3, "shout": 0.2}
+    peaks = sorted([p for p in A.peaks if A.film_start <= p["t"] <= A.film_end],
+                   key=lambda p: -(p["score"] + kind_bonus.get(p.get("kind", ""), 0.0)))
     withheld: list[dict] = []
     if P.withhold_climax and P.withhold_n > 0:
         late = A.film_start + (A.film_end - A.film_start) * (1 - P.withhold_last_frac)
@@ -446,7 +480,9 @@ def _cover_span(a: float, b: float, tag: str, A: Analysis, P: SelectParams, *, s
             t2, m_out = A.avoid_flash(t, m_out)
             if t2 < b - 0.4:
                 t = t2
-        if m_out - t >= 1.2:
+        if m_out < b - 0.4:
+            m_out = min(A.complete_dialog(m_out), b, t + P.clip_cap_s + 1.0)
+        if m_out - t >= P.min_shot_s:
             segs.append(Segment(id=f"{tag}m{k}", **{"in": round(t, 2)}, out=round(m_out, 2), layout="movie-large",
                                 kind="story", score=score, chapter=chapter if k == 0 else None, note=note))
         t = m_out
@@ -481,6 +517,28 @@ def _narrative_pieces(A: Analysis, P: SelectParams, priorities: tuple[str, ...])
         out.append(_cover_span(a, b, f"n{i:03d}", A, P, score=3.0,
                                note=f"key line [{k.get('priority')}]: {str(k.get('heard') or k.get('expected'))[:60]}"))
         covered.append((a, b))
+    for j, mo in enumerate(m for m in A.moments if m.get("priority") in priorities):
+        a = max(A.film_start, mo["t0"] - 0.8)
+        b = min(A.film_end, min(mo["t1"], mo["t0"] + 26.0) + 0.8)
+        if any(x0 - 2 < (a + b) / 2 < x1 + 2 for x0, x1 in covered):
+            continue
+        # a detected reaction peak inside the span confirms the moment's location (model knowledge
+        # cross-validated by his actual reaction); centre the coverage just before the peak
+        pk = max((pp for pp in A.peaks if a - 4 <= pp["t"] <= b + 6), key=lambda pp: pp["score"], default=None)
+        if pk is not None:
+            b = min(b, pk["t"] + 1.5)
+            a = max(A.film_start, min(a, pk["t0"] - 6.0))
+        a = A.quiet_point(A.snap_to_cut(a, 1.2))
+        if A.song_overlap(a, b) > 0.5 * (b - a):
+            continue
+        piece = _cover_span(a, b, f"mo{j:02d}", A, P, score=3.5,
+                            note=f"moment [{mo.get('priority')}]: {mo.get('label', '')}" + (" (peak-confirmed)" if pk else ""))
+        if pk is not None:
+            rp = _peak_piece(pk, 800 + j, A, P)
+            if rp is not None:
+                piece.segs += [sg for sg in rp.segs if sg.layout == "reactor-large"]
+        out.append(piece)
+        covered.append((a, b))
     beat_labels_with_lines = {k.get("beat") for k in lines}
     for j, bt in enumerate(x for x in A.beats if x.get("priority") in priorities):
         if bt.get("label") in beat_labels_with_lines:
@@ -501,8 +559,19 @@ def _narrative_pieces(A: Analysis, P: SelectParams, priorities: tuple[str, ...])
 
 def _peak_piece(p: dict, idx: int, A: Analysis, P: SelectParams) -> _Piece | None:
     t0, t1 = p["t0"], p["t1"]
-    dur = min(max(t1 - t0, P.reaction_min_s), P.reaction_max_s)
+    voiced = A.voiced_reactor_span(t0 - 1.0, t1 + 1.0)
+    in_opening = p["t"] < A.film_start + P.opening_grace_s
+    if voiced is None and in_opening:
+        return None                      # opening grace: no visual-only reactor cutaways early
+    if voiced is not None:
+        # RL only while he is actually reacting audibly — he is visible in the FL inset otherwise
+        t0, t1 = max(t0 - 0.5, voiced[0]), min(t1 + 1.0, voiced[1])
+        dur = min(max(t1 - t0, P.reaction_min_s), P.reaction_max_s)
+    else:
+        dur = min(max(t1 - t0, P.reaction_min_s), P.visual_reaction_max_s)
     r_in = max(A.film_start, p["t"] - dur * 0.35)
+    if voiced is not None:
+        r_in = max(A.film_start, min(max(voiced[0], t0), p["t"]))
     # loud film event (gunshot, crash …) inside the trigger window → the movie stays on screen
     # until the event ends; his reaction follows it.
     loud_end = A.loud_film_end(r_in - 3.0, min(p["t"] + 2.0, t1))
@@ -523,6 +592,8 @@ def _peak_piece(p: dict, idx: int, A: Analysis, P: SelectParams) -> _Piece | Non
             segs.append(Segment(id=f"p{idx:03d}m", **{"in": round(m_in, 2)}, out=round(m_out, 2), layout="movie-large",
                                 kind="story", score=p["score"], note=f"trigger for peak {idx} ({p['kind']}){note_extra}"))
             r_in = m_out
+    if voiced is not None:
+        r_out = min(r_out, voiced[1] + 0.3)
     r_out = A.quiet_point(r_out)
     if r_out - r_in < P.reaction_min_s:
         r_out = min(A.film_end, r_in + P.reaction_min_s)
@@ -541,10 +612,11 @@ def _spine_pieces(A: Analysis, P: SelectParams, gap: float, existing: list[_Piec
     while t < A.film_end - 10:
         nxt = next((c for c in covered if c[0] >= t), None)
         next_cov = nxt[0] if nxt else A.film_end
-        if next_cov - t <= gap:
+        local_gap = gap * 0.55 if t < A.film_start + P.opening_grace_s else gap
+        if next_cov - t <= local_gap:
             t = max(t + 1.0, nxt[1] if nxt else A.film_end)
             continue
-        anchor = t + gap * 0.6
+        anchor = t + local_gap * 0.6
         piece = _spine_at(anchor, k, A, P, lo=max(t + 1.0, anchor - 20), until=min(next_cov, anchor + 20))
         if piece:
             out.append(piece)
@@ -587,8 +659,9 @@ def _spine_at(anchor: float, k: int, A: Analysis, P: SelectParams, lo: float, un
         cands.append((0.0, start, end, None))
     score, start, end, seg = max(cands, key=lambda c: c[0])
     start, end = A.avoid_flash(start, end)
+    end = min(A.complete_dialog(end), end + 2.2)
     end = A.quiet_point(end)
-    if end - start < 2.5:
+    if end - start < max(2.5, P.min_shot_s):
         return None
     beat = A.beat_at((start + end) / 2)
     segs = [Segment(id=f"s{k:03d}m", **{"in": round(start, 2)}, out=round(end, 2), layout="movie-large", kind="story", score=score,
@@ -645,6 +718,8 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
     for s in merged:
         if s.layout == "movie-large" and s.dur > P.clip_cap_s + 1e-6:
             s = s.model_copy(update={"out": s.in_ + P.clip_cap_s, "note": s.note + " (trimmed to clip cap)"})
+        if s.layout == "movie-large" and s.dur < P.min_shot_s:
+            continue                                     # a shot must register (≥ min_shot_s)
         if s.dur < P.layout_min_s and s.kind not in ("cta",):
             # too short for hysteresis: drop unless it is the only thing here
             if final and final[-1].layout == s.layout:
@@ -652,6 +727,36 @@ def _assemble(pieces: list[_Piece], A: Analysis, P: SelectParams, source: str, r
             if s.dur < 1.0:
                 continue
         final.append(s)
+    # contiguity breaker: adjacent movie-large slices that are continuous in SOURCE time fingerprint
+    # (video and audio) as one long pull no matter how many visual cuts we make. Force a small
+    # source-time skip once a continuous run exceeds the clip cap — reads as a jump cut, breaks the
+    # match surface. Split cutaways inside narrative musts intentionally keep audio continuous, but
+    # a following movie slice resumes AFTER a skip.
+    run = 0.0
+    prev_out: float | None = None
+    for i, s in enumerate(final):
+        if s.layout != "movie-large":
+            if s.layout == "reactor-large" and prev_out is not None and abs(s.in_ - prev_out) < 0.75:
+                run += s.dur                             # audio continues under RL → still one match run
+                prev_out = s.out
+            else:
+                run, prev_out = 0.0, None
+            continue
+        contiguous = prev_out is not None and abs(s.in_ - prev_out) < 0.75
+        if contiguous and run + s.dur > P.clip_cap_s + 0.5:
+            skip = P.jump_skip_s
+            new_in = min(s.in_ + skip, s.out - P.min_shot_s)
+            if new_in > s.in_ + 0.4:
+                s = s.model_copy(update={"in_": round(new_in, 2), "note": s.note + f" (+{new_in - s.in_:.1f}s jump cut)"})
+                final[i] = s
+                run = 0.0
+            else:
+                run += s.dur
+        elif contiguous:
+            run += s.dur
+        else:
+            run = s.dur
+        prev_out = s.out
     # chapters roughly every 10 min of output at story segments
     seen_labels: set[str] = set()
     for s in final:

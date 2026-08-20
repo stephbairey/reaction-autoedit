@@ -34,14 +34,24 @@ title/year and (when available) its Wikipedia plot section, produce a Save-the-C
 of the beats ACTUALLY PRESENT in the film, in order. For each beat give the dialogue lines a viewer
 would most expect to hear (the famous/big lines and the lines that carry the plot).
 
+Also list the film's FAN-FAVORITE MOMENTS: the scenes audiences remember, quote and clip —
+shocks, big laughs, iconic images, famous yells — independent of structural necessity (a moment can
+matter enormously to viewers without the plot needing it: an accidental gunshot, a legendary insult,
+a needle-drop dance). Think "which clips of this film go viral".
+
 Return STRICT JSON:
 {"beats": [{"stc": "opening_image|setup|theme_stated|catalyst|debate|break_into_two|b_story|
 fun_and_games|midpoint|bad_guys_close_in|all_is_lost|dark_night_of_the_soul|break_into_three|
 finale|final_image|other", "label": "<≤8 words>", "summary": "<1-2 sentences>",
 "why_essential": "<1 sentence>", "importance": <0..1>,
-"big_lines": ["<verbatim or near-verbatim dialogue>", ...]}]}
+"big_lines": ["<verbatim or near-verbatim dialogue>", ...]}],
+ "moments": [{"label": "<≤8 words>", "description": "<1 sentence — what happens on screen>",
+"why_popular": "<1 sentence>", "importance": <0..1>,
+"lines": ["<dialogue heard at or just before the moment, if any>", ...]}]}
 Rules: 10-18 beats; merge tiny beats; big_lines 0-4 per beat, exact wording where famous;
-importance reflects how lost a viewer is without the beat."""
+importance reflects how lost a viewer is without the beat. 8-14 moments — include the smaller famous
+bits too (pranks, jump scares, accidental discharges, sight gags, physical comedy), not only the
+canonical big scenes; importance reflects how disappointed a fan would be if the moment were missing."""
 
 N2_SYSTEM = """You are aligning a film's beat sheet to a specific recording of that film (a reaction
 recording; timestamps are seconds into the recording). You get the beat sheet and the film-dialogue
@@ -53,13 +63,17 @@ Return STRICT JSON:
             "t0": <sec>, "t1": <sec>, "priority": "must|should|could"}],
  "key_lines": [{"beat": "<beat label>", "expected": "<line from the sheet>",
                 "heard": "<matching transcript text>", "t0": <sec>, "t1": <sec>,
-                "priority": "must|should|could"}]}
+                "priority": "must|should|could"}],
+ "moments": [{"label": "<from the sheet's moments>", "t0": <sec>, "t1": <sec>,
+              "priority": "must|should|could", "evidence": "<transcript text or reasoning that
+places it here; moments are often non-verbal — locate them by the dialogue AROUND them>"}]}
 Rules: every beat from the sheet appears once with its span in THIS recording (t0/t1 bracketed by
 transcript timestamps you actually saw; if a beat is absent from the transcript, give your best
 span estimate between its neighbours and priority "could"). key_lines only where you genuinely
-matched the line (or its garbled form) in the transcript. Priorities: "must" = the story breaks
-without it (aim for 10-16 musts total across beats+lines), "should" = strongly expected,
-"could" = nice to have."""
+matched the line (or its garbled form) in the transcript. Every moment from the sheet appears with
+its best-estimate span (bracket it by surrounding dialogue; spans 5-30 s). Priorities: "must" = the
+story breaks without it or fans would riot (aim for 10-16 musts across beats+lines+moments),
+"should" = strongly expected, "could" = nice to have."""
 
 
 # ---------------------------------------------------------------- wikipedia
@@ -147,9 +161,10 @@ def build_plan(title: str, year: int | None, out: Path, *, model: str = DEFAULT_
     user = f"Film: {title}" + (f" ({year})" if year else "") + f"\n\n{src}\n\nReturn the JSON now."
     data = _ask(N1_SYSTEM, user, model)
     beats = [b for b in data.get("beats", []) if b.get("label")]
+    moments = [m for m in data.get("moments", []) if m.get("label")]
     result = {"model": model, "title": title, "year": year,
               "source": {k: wiki[k] for k in ("title", "url")} if wiki else None,
-              "n": len(beats), "beats": beats}
+              "n": len(beats), "n_moments": len(moments), "beats": beats, "moments": moments}
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     return out
@@ -176,16 +191,18 @@ def ground_plan(plan_path: Path, transcript_segments: list[dict], out: Path, *,
     if len(body) > max_chars:
         keep = max_chars / len(body)
         body = "\n".join(l for i, l in enumerate(lines) if (i * keep) % 1 < keep)
-    user = (f"Beat sheet:\n{json.dumps({'beats': plan['beats']}, ensure_ascii=False)}\n\n"
+    user = (f"Beat sheet:\n{json.dumps({'beats': plan['beats'], 'moments': plan.get('moments', [])}, ensure_ascii=False)}\n\n"
             f"Film-dialogue transcript of the recording:\n{body}\n\nReturn the JSON now.")
     data = _ask(N2_SYSTEM, user, model, max_tokens=16000)
     beats = sorted((b for b in data.get("beats", []) if b.get("t1", 0) > b.get("t0", 0)), key=lambda b: b["t0"])
     keys = sorted((k for k in data.get("key_lines", []) if k.get("t1", 0) > k.get("t0", 0)), key=lambda k: k["t0"])
+    moments = sorted((m for m in data.get("moments", []) if m.get("t1", 0) > m.get("t0", 0)), key=lambda m: m["t0"])
     if film_bounds:
         a, b_ = film_bounds
         beats = [x for x in beats if x["t1"] > a and x["t0"] < b_]
         keys = [x for x in keys if x["t1"] > a and x["t0"] < b_]
+        moments = [x for x in moments if x["t1"] > a and x["t0"] < b_]
     result = {"model": model, "plan": str(plan_path), "n_beats": len(beats), "n_key_lines": len(keys),
-              "beats": beats, "key_lines": keys}
+              "n_moments": len(moments), "beats": beats, "key_lines": keys, "moments": moments}
     out.write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     return out
