@@ -51,7 +51,8 @@ class Branding(BaseModel):
     endcard_duration: float = 8.0
     lower_third_duration: float = 6.0
     lower_third_schedule: LowerThirdSchedule = Field(default_factory=LowerThirdSchedule)
-    title_card: str | None = None   # per-title card image (movie logo over channel card); shown after the intro
+    title_card: str | None = None        # composed per-title card (movie logo over base); shown after the intro
+    title_card_base: str | None = None   # the channel's base card the logo gets composed onto
 
 
 class ReactorConfig(BaseModel):

@@ -8,6 +8,7 @@ Later-stage commands (select, preflight) are stubs that document the intended in
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,23 @@ from .config import ReactorConfig, TitleConfig, dump_json, load_reactor
 from .edl import EDL, starter_edl
 from .models import Geometry
 from .project import DEFAULT_ROOT, Project
+
+def _load_dotenv(path: Path = Path(".env")) -> None:
+    """Tiny .env loader (no extra dependency): KEY=VALUE lines, no quoting/expansion, env wins."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip().strip("'\"")
+            if k and v and k not in os.environ:
+                os.environ[k] = v
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv()
 
 app = typer.Typer(help="reaction-autoedit: abridged co-watch cuts from movie-reaction composites.",
                   no_args_is_help=True, add_completion=False)
@@ -283,6 +301,9 @@ def make_card(
 
     proj = Project.load(name, root)
     tc = proj.title()
+    rc = proj.reactor()
+    if base is None and rc.branding.title_card_base and Path(rc.branding.title_card_base).exists():
+        base = Path(rc.branding.title_card_base)
     url = logo_url or tc.clearlogo_url
     logo_path = logo
     if logo_path is None and url:
@@ -294,7 +315,7 @@ def make_card(
                 logo_path.write_bytes(r.read())
             console.print(f"downloaded logo → {logo_path}")
     dest = proj.root / "assets" / "title_card.png"
-    make_title_card(dest, logo=logo_path, base=base, title=tc.title)
+    make_title_card(dest, logo=logo_path, base=base, title=tc.title, subtitle="" if base else "abridged reaction")
     console.print(f"[green]wrote[/] {dest}")
     console.print(f"reference it from the title config: \"title_card\": \"{dest.as_posix()}\" (or reactor branding.title_card)")
 

@@ -33,6 +33,7 @@
     "endcard": "templates/endcard.png",
     "lower_third": "templates/lower_third.png",
     "endcard_duration": 8.0,
-    "lower_third_duration": 6.0
+    "lower_third_duration": 6.0,
+    "title_card_base": "templates/title-card-bg.jpg"
   }
 }
