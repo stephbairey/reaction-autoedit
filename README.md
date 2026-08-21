@@ -252,12 +252,16 @@ workflow; auto is for the backlog grind once settings are trusted.
 4. ✅ **M4** — narrative-driven selection (beat sheet + fan-favorite moments via Anthropic, must/should placement, movie/reactor ratio dial, micro-cut treatment for key scenes).
 5. ✅ **M5** — Stage 0 preflight (own-history flag + YouTube survival survey), Stage 6 outcome loop, `rae auto`. (Real-ESRGAN punted to phase 2; 4K masters are the better fix.)
 
+### GUI
+
+`uv sync --extra gui && uv run rae gui` — local web app in a native window (browser fallback on
+WSL). Screens: movie lookup (survival survey) → projects → stage dashboard with live progress →
+review (player + cut-list editing + film-bounds from the playhead) → settings forms → outcome
+logging. Windows installers (CPU and GPU editions, ffmpeg bundled) build in GitHub Actions on
+version tags (`packaging/`, `.github/workflows/build-windows.yml`).
+
 ### Phase 2 (after the pipeline is proven on real uploads)
 
-- **GUI** — the end user shouldn't need a CLI. Thin desktop UI over the same commands: project list,
-  review screen (EDL timeline with per-segment accept/trim/layout toggles + preview player), style
-  settings (inset corner/size, border gradient colors/width, blur, banner schedule), render queue.
-- **Windows 11 installer** — bundled Python + ffmpeg (PyInstaller or briefcase), one-click install;
-  GPU auto-detected as today.
-- TVDB API integration for automatic clearlogo/title-card lookup per title. ✅ (done in phase 1)
-- The GUI binds to the settings inventory in [docs/settings.md](docs/settings.md).
+- **GUI** ✅ · **Windows 11 installer (CPU+GPU editions)** ✅ · TVDB lookup ✅ — remaining ideas:
+  richer EDL timeline editing (drag trim), auto-applied conservative profile on yellow preflight,
+  batch queue over the whole backlog.

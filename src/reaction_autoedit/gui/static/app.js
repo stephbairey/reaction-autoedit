@@ -299,7 +299,23 @@ async function settingsScreen() {
   const render = (kind, data) => `<div class="card"><h2 style="margin-top:0">${kind === "reactor" ? "Channel (reactor)" : "Movie (title)"} settings <span class="dim mono">${esc(data.path)}</span></h2>
     <form class="settings" id="f-${kind}">${Object.entries(data.values).filter(([k]) => !HIDDEN.has(k)).map(([k, v]) => fieldFor(k, v, data.schema, "")).join("")}</form>
     <div class="row" style="margin-top:12px"><button data-save="${kind}" data-path="${esc(data.path)}">Save</button></div></div>`;
-  view.innerHTML = `<h1>Settings</h1>` + render("reactor", r) + render("title", t);
+  view.innerHTML = `<h1>Settings</h1>` + render("reactor", r) + render("title", t) + `
+  <div class="card"><h2 style="margin-top:0">CTA banner & endcard (regenerate placeholders)</h2>
+    <div class="row">
+      <select id="st-kind"><option value="lower_third">banner (lower third)</option><option value="endcard">endcard</option></select>
+      <input id="st-text" value="FULL REACTION ON PATREON" style="min-width:240px">
+      <input id="st-sub" placeholder="subtitle / patreon url" style="min-width:220px">
+      <button class="ghost" id="st-go">Generate</button>
+    </div>
+    <p class="dim">Or replace the PNGs in <span class="mono">templates/</span> with designed assets — uploads win over generated ones.</p>
+    <div id="st-prev"></div></div>`;
+  $("#st-go").onclick = async () => {
+    try {
+      const r2 = await api("/style", { method: "POST", body: JSON.stringify({ kind: $("#st-kind").value, text: $("#st-text").value, sub: $("#st-sub").value }) });
+      $("#st-prev").innerHTML = `<img class="thumb" style="max-width:560px;margin-top:10px" src="${r2.url}&t=${Date.now()}">`;
+      toast("written to " + r2.written);
+    } catch (e) { toast(e.message, true); }
+  };
   view.querySelectorAll("[data-save]").forEach(btn => btn.onclick = async () => {
     const kind = btn.dataset.save;
     const values = {};

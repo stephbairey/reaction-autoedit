@@ -349,6 +349,38 @@ def log_outcome_api(name: str, body: OutcomeReq):
     return {"recorded": body.outcome, "studio_table": {k: dict(v) for k, v in store.by_studio().items()}}
 
 
+# ------------------------------------------------------------------ CTA / branding asset styling
+class StyleReq(BaseModel):
+    kind: str                       # lower_third | endcard
+    text: str = "FULL REACTION ON PATREON"
+    sub: str = ""
+    out: str | None = None          # default: templates/<kind>.png
+
+
+@router.post("/style")
+def style(body: StyleReq):
+    from ..assemble.templates import make_endcard, make_lower_third
+
+    out = body.out or f"templates/{body.kind}.png"
+    if body.kind == "lower_third":
+        make_lower_third(out, text=body.text, sub=body.sub)
+    elif body.kind == "endcard":
+        make_endcard(out, patreon_url=body.sub or "patreon.com", display_name=body.text or "the reactor")
+    else:
+        raise HTTPException(400, "kind must be lower_third|endcard")
+    return {"written": out, "url": "/asset?path=" + out}
+
+
+@router.get("/asset")
+def asset(path: str):
+    from fastapi.responses import FileResponse
+
+    p = Path(path)
+    if not p.exists() or p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+        raise HTTPException(404, "no such asset")
+    return FileResponse(p)
+
+
 # ------------------------------------------------------------------ settings
 _CONFIGS = {"reactor": (ReactorConfig, load_reactor), "title": (TitleConfig, load_title)}
 
