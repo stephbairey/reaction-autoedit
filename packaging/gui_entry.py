@@ -9,6 +9,10 @@ if getattr(sys, "frozen", False):
     if (ff / "ffmpeg.exe").exists():
         os.environ.setdefault("FFMPEG_BIN", str(ff / "ffmpeg.exe"))
         os.environ.setdefault("FFPROBE_BIN", str(ff / "ffprobe.exe"))
+    torch_lib = bundle / "torch" / "lib"        # CUDA/cuDNN DLLs (GPU edition) — ctranslate2 needs them on PATH
+    if torch_lib.exists():
+        os.add_dll_directory(str(torch_lib))
+        os.environ["PATH"] = str(torch_lib) + os.pathsep + os.environ.get("PATH", "")
     home = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ReactionAutoEdit"
     home.mkdir(parents=True, exist_ok=True)
     for sub in ("configs", "templates"):

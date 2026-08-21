@@ -23,8 +23,11 @@ jobs:
       - name: Install deps (${{ matrix.edition }})
         shell: bash
         run: |
-          if [ "${{ matrix.edition }}" = "cpu" ]; then export UV_TORCH_BACKEND=cpu; else export UV_TORCH_BACKEND=cu126; fi
           uv sync --extra analysis --extra llm --extra gui
+          if [ "${{ matrix.edition }}" = "gpu" ]; then
+            # lockfile pins PyPI torch (CPU-only on Windows); swap in CUDA wheels for the GPU edition
+            uv pip install --index-url https://download.pytorch.org/whl/cu126 torch torchaudio
+          fi
           uv pip install pyinstaller
           uv pip uninstall typing || true   # obsolete backport (transitive); PyInstaller refuses to run with it
       - name: Fetch ffmpeg (gyan.dev release essentials)
