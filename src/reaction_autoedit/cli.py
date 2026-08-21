@@ -791,6 +791,40 @@ def preflight(
 
 
 @app.command()
+def lookup(
+    title: str = typer.Argument(..., help="movie title, quoted"),
+    year: Optional[int] = typer.Option(None),
+    force: bool = typer.Option(False, help="refresh cached survey"),
+):
+    """Stage 0 lookup WITHOUT a project — the GUI's pre-selection screen backend.
+
+    Type a movie title, see how it's doing online for other reactors (survival survey) plus any
+    of this channel's own history for matching titles. Cached per title under work/_lookup/."""
+    from .preflight.outcomes import OutcomeStore
+    from .preflight.survey import SurveyError, survey
+
+    slug = "".join(c if c.isalnum() else "-" for c in title.lower()).strip("-")
+    cache = Path("work/_lookup") / f"{slug}{'-' + str(year) if year else ''}.json"
+    try:
+        with console.status("surveying YouTube…"):
+            sv = survey(title, year, cache, force=force)
+    except SurveyError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]{title}[/]" + (f" ({year})" if year else ""))
+    console.print(f"  surviving long-form reactions: {sv['n_longform']} (≥{sv['min_minutes']:.0f} min); "
+                  f"{sv['n_older_6mo']} older than 6 mo; median age {sv['median_age_months'] or 0:.0f} mo, "
+                  f"oldest {sv['oldest_age_months'] or 0:.0f} mo; median views {sv['median_views'] or 0:,}")
+    console.print(f"  verdict: [bold]{sv['verdict']}[/]")
+    for v in sv["videos"][:8]:
+        console.print(f"  [dim]{v['age_months']:5.1f} mo  {v['minutes']:5.0f} min  {v['views']:>10,} views  "
+                      f"{v['channel'][:24]:24s} {v['title'][:44]}[/]")
+    own = [e for e in OutcomeStore.default().entries if title.lower() in e.get("title", "").lower()]
+    if own:
+        console.print("  own uploads of this title: " + ", ".join(f"{e['outcome']} ({e['at'][:10]})" for e in own))
+
+
+@app.command()
 def auto(
     name: str,
     input: Optional[Path] = typer.Option(None, "--input", "-i", help="create the project from this recording first"),

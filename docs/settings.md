@@ -65,6 +65,14 @@ Today the banner and endcard are PNG templates (upload your own; placeholders vi
 `rae make-templates`). Planned for the GUI: a style form (text, colors, position, gradient accents)
 that regenerates the PNGs — same mechanism as the title card composer.
 
+## GUI screen 0: movie lookup (before choosing a movie)
+
+A textbox + submit. Backend: `rae lookup "<title>" [--year N]` (no project needed). Shows the
+survival survey — how many long-form reactions to this title are still up, their ages, views and
+channels, with a verdict (tolerant / mixed / sparse / none-found) — plus the channel's own claim
+history for the title if any. This is the "should I even record/publish this one?" screen; from
+here the user picks the recording file and the normal flow begins.
+
 ## Preflight & outcomes
 
 | GUI setting | Config key / command | Notes |
