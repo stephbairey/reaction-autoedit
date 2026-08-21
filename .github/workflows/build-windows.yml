@@ -1,4 +1,7 @@
 name: build-windows
+permissions:
+  contents: write
+
 on:
   push:
     tags: ["v*"]
