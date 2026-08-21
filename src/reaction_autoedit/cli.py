@@ -730,8 +730,98 @@ def select(
 
 @app.command()
 def preflight(name: str, root: Path = typer.Option(DEFAULT_ROOT)):
-    """Stage 0: per-title risk / monetization check. [M5]"""
-    _not_yet("Stage 0 (preflight)", "reaction_autoedit/preflight/")
+    """Stage 0 (optional): per-title risk flag from the channel's own claim history.
+
+    Evidence source #1 (the reactor's uploads) is automatic via the outcome table
+    (`rae log-outcome` after each upload). Source #2 — searching YouTube for surviving long-form
+    reactions to the title — stays manual: check and use your judgment. Red requires --override
+    on render (upload-and-learn is the default strategy; run this only for titles where a block
+    would be costly)."""
+    from .preflight.outcomes import OutcomeStore
+
+    proj = Project.load(name, root)
+    tc = proj.title()
+    store = OutcomeStore.default()
+    flag = store.flag_for(tc.studio)
+    table = store.by_studio().get(tc.studio or "unknown")
+    console.print(f"title: {tc.title} ({tc.studio or 'unknown studio'})")
+    if table:
+        console.print(f"channel history for this studio: {dict(table)}")
+    else:
+        console.print("[dim]no outcome history for this studio yet — upload-and-learn applies[/]")
+    colors = {"green": "green", "yellow": "yellow", "red": "red", "unknown": "cyan"}
+    console.print(f"risk flag: [{colors[flag]}]{flag}[/]")
+    n = sum(table.values()) if table else 0
+    likely = ("likely clean/sharing" if flag == "green" else
+              "likely redirect — expect no ad revenue" if flag == "yellow" else
+              "block risk — consider skipping or a very conservative cut" if flag == "red" else
+              "no prediction")
+    console.print(f"monetization note: {likely}" + (f" (n={n})" if n else ""))
+    console.print("[dim]manual check: search YouTube for long-form reactions to this exact title — "
+                  "surviving monetized uploads → tolerant rights holder; a removal graveyard → conservative cut.[/]")
+    proj.mark("preflight", flag=flag, studio=tc.studio)
+    if flag == "red":
+        raise typer.Exit(code=3)
+
+
+@app.command()
+def auto(
+    name: str,
+    input: Optional[Path] = typer.Option(None, "--input", "-i", help="create the project from this recording first"),
+    reactor: Optional[Path] = typer.Option(None, help="reactor config"),
+    title: Optional[Path] = typer.Option(None, help="title config"),
+    skip_preflight: bool = typer.Option(True, "--skip-preflight/--preflight"),
+    preview_only: bool = typer.Option(False, help="stop at the fast preview instead of the final render"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
+    """The --auto mode from the brief: run the whole pipeline straight through.
+
+    init (if --input) → detect-layout → analyze → narrative (if ANTHROPIC_API_KEY) → select →
+    render. Review mode is the default workflow (`select` then hand-edit edl.json then `render`);
+    auto is for the backlog grind once settings are trusted."""
+    from .analysis import pipeline
+
+    if input is not None:
+        Project.create(name, input, root=root, reactor_config=str(reactor) if reactor else None,
+                       title_config=str(title) if title else None, overwrite=False)
+        console.print(f"[green]project created[/]: {name}")
+    proj = Project.load(name, root)
+    if not skip_preflight:
+        from .preflight.outcomes import OutcomeStore
+
+        flag = OutcomeStore.default().flag_for(proj.title().studio)
+        if flag == "red":
+            console.print("[red]preflight: red flag — aborting (run stages manually to override)[/]")
+            raise typer.Exit(code=3)
+    from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+
+    if proj.state.geometry is None:
+        detect_layout_cmd(name, frames=120, template=None, force_template=False, debug_image=True, root=root)
+        proj = Project.load(name, root)          # reload: detect-layout saved via its own instance
+    profile = compute.detect()
+    steps = pipeline.STEPS
+    try:
+        pipeline.voice_samples(proj)
+    except (FileNotFoundError, RuntimeError):
+        console.print("[yellow]no voice sample configured — skipping speaker attribution "
+                      "(peaks degrade to motion/tags; set voice_sample in the reactor config)[/]")
+        steps = tuple(x for x in steps if x not in ("speakers",))
+    with Progress(TextColumn("[bold]{task.description}"), BarColumn(), TextColumn("{task.fields[msg]}"), TimeElapsedColumn(), console=console) as prog:
+        task = prog.add_task("analyze", total=1.0, msg="")
+        pipeline.run(proj, steps=steps, force=False, profile=profile, voice=[],
+                     log=lambda m: console.print(f"[dim]{m}[/]"),
+                     progress=lambda f, m: prog.update(task, completed=f, msg=m))
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            narrative(name, model="claude-sonnet-5", force=False, root=root)
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[yellow]narrative pass failed ({e.__class__.__name__}); selection falls back to heuristics[/]")
+    else:
+        console.print("[yellow]no ANTHROPIC_API_KEY — selection uses heuristics only[/]")
+    select(name, runtime=None, clip_cap=None, withhold=None, trim_intro=None, trim_outro=None,
+           silence_cut=None, out=None, root=root)
+    render(name, edl=None, out=None, preview=preview_only, resolution=None, jobs=None, force=False,
+           encoder=None, root=root)
 
 
 @app.command("log-outcome")
