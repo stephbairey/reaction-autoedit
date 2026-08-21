@@ -23,7 +23,7 @@ jobs:
       - name: Install deps (${{ matrix.edition }})
         shell: bash
         run: |
-          if [ "${{ matrix.edition }}" = "cpu" ]; then export UV_TORCH_BACKEND=cpu; fi
+          if [ "${{ matrix.edition }}" = "cpu" ]; then export UV_TORCH_BACKEND=cpu; else export UV_TORCH_BACKEND=cu126; fi
           uv sync --extra analysis --extra llm --extra gui
           uv pip install pyinstaller
           uv pip uninstall typing || true   # obsolete backport (transitive); PyInstaller refuses to run with it
