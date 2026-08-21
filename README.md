@@ -223,13 +223,34 @@ the intro and the film (movie clearlogo over your branding; TVDB artwork URLs wo
 automated TVDB lookup by title is planned once an API key is configured). Point
 `title_card` in the title config (or reactor `branding.title_card`) at the result.
 
+### Stage 0: preflight (optional risk check)
+
+```bash
+rae preflight mymovie          # green / yellow / red + evidence card
+rae log-outcome mymovie sharing   # after each upload: none | sharing | redirect | block
+```
+
+Two evidence sources: the channel's own claim history (`configs/outcomes.json`, built by
+`log-outcome` — claim status isn't available via any public API, so this stays a 30-second manual
+step per upload) and the **survival survey** — with `YOUTUBE_API_KEY` in `.env`, preflight searches
+YouTube for long-form reactions to the title that are *still standing* and reports how many, how
+old, and on which channels (survival age is the best public proxy for a tolerant rights holder;
+monetization status is never publicly visible). Own history dominates; the survey refines an
+unknown flag. Red makes `rae auto` refuse.
+
+### One-shot mode
+
+`rae auto <name> [--input recording.mp4]` runs the whole pipeline: detect-layout → analyze →
+narrative → select → render. Review mode (select, hand-edit `edl.json`, render) stays the default
+workflow; auto is for the backlog grind once settings are trusted.
+
 ## Roadmap
 
 1. ✅ **M1** — Stage 1 layout detection + Stage 4/5 render from a hand-written EDL.
 2. ✅ **M2** — Stage 2 transcription + speaker attribution (resemblyzer + local in-domain clustering; ECAPA optional), validated on 88 human-labelled windows.
-3. 🔄 **M3** — reaction peaks, music tiering (PANNs), scene cuts, dead air — implemented; validating.
-4. **M4** — Stage 3 two-budget selection with clip cap and withhold-the-climax; `--review` / `--auto`.
-5. **M5** — Stage 0 preflight, Stage 6 outcome loop, optional Real-ESRGAN pass for `reactor-large`.
+3. ✅ **M3** — reaction peaks, music tiering (PANNs), scene cuts, dead air.
+4. ✅ **M4** — narrative-driven selection (beat sheet + fan-favorite moments via Anthropic, must/should placement, movie/reactor ratio dial, micro-cut treatment for key scenes).
+5. ✅ **M5** — Stage 0 preflight (own-history flag + YouTube survival survey), Stage 6 outcome loop, `rae auto`. (Real-ESRGAN punted to phase 2; 4K masters are the better fix.)
 
 ### Phase 2 (after the pipeline is proven on real uploads)
 

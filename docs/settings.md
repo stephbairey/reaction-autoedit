@@ -64,3 +64,10 @@ is per-movie, and per-recording facts live in `work/<name>/project.json`.
 Today the banner and endcard are PNG templates (upload your own; placeholders via
 `rae make-templates`). Planned for the GUI: a style form (text, colors, position, gradient accents)
 that regenerates the PNGs — same mechanism as the title card composer.
+
+## Preflight & outcomes
+
+| GUI setting | Config key / command | Notes |
+|---|---|---|
+| Risk check | `rae preflight` | green/yellow/red; survival survey needs `YOUTUBE_API_KEY` |
+| Log claim outcome | `rae log-outcome <name> none\|sharing\|redirect\|block` | 30 s after each upload; feeds the per-studio table |

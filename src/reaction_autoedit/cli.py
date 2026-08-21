@@ -729,7 +729,12 @@ def select(
 
 
 @app.command()
-def preflight(name: str, root: Path = typer.Option(DEFAULT_ROOT)):
+def preflight(
+    name: str,
+    search: bool = typer.Option(True, "--search/--no-search", help="run the YouTube survival survey (needs YOUTUBE_API_KEY)"),
+    force: bool = typer.Option(False, help="refresh a cached survey"),
+    root: Path = typer.Option(DEFAULT_ROOT),
+):
     """Stage 0 (optional): per-title risk flag from the channel's own claim history.
 
     Evidence source #1 (the reactor's uploads) is automatic via the outcome table
@@ -749,17 +754,38 @@ def preflight(name: str, root: Path = typer.Option(DEFAULT_ROOT)):
         console.print(f"channel history for this studio: {dict(table)}")
     else:
         console.print("[dim]no outcome history for this studio yet — upload-and-learn applies[/]")
+    # evidence source #2: the survival survey — how have OTHER reactors fared with this title?
+    sv = None
+    if search and os.environ.get("YOUTUBE_API_KEY"):
+        from .preflight.survey import SurveyError, survey
+
+        try:
+            with console.status("surveying YouTube for surviving long-form reactions…"):
+                sv = survey(tc.title, tc.year, proj.analysis_dir / "preflight.json", force=force)
+        except SurveyError as e:
+            console.print(f"[yellow]survey unavailable: {e}[/]")
+    elif search:
+        console.print("[dim]no YOUTUBE_API_KEY — skipping the survival survey (manual check applies)[/]")
+    if sv:
+        console.print(f"survival survey: {sv['n_longform']} long-form (≥{sv['min_minutes']:.0f} min) reactions still up; "
+                      f"{sv['n_older_6mo']} older than 6 months; "
+                      f"median age {sv['median_age_months'] or 0:.0f} mo, oldest {sv['oldest_age_months'] or 0:.0f} mo; "
+                      f"median views {sv['median_views'] or 0:,} → [bold]{sv['verdict']}[/]")
+        for v in sv["videos"][:5]:
+            console.print(f"  [dim]{v['age_months']:5.1f} mo  {v['minutes']:5.0f} min  {v['views']:>10,} views  "
+                          f"{v['channel'][:24]:24s} {v['title'][:46]}[/]")
+    # combine: own history dominates; the survey refines an unknown flag
+    if flag == "unknown" and sv:
+        flag = {"tolerant": "green", "mixed": "yellow", "sparse": "yellow", "none-found": "unknown"}[sv["verdict"]]
     colors = {"green": "green", "yellow": "yellow", "red": "red", "unknown": "cyan"}
-    console.print(f"risk flag: [{colors[flag]}]{flag}[/]")
+    console.print(f"risk flag: [{colors[flag]}]{flag}[/]" + (" (from survey; no own-channel history yet)" if table is None and sv else ""))
     n = sum(table.values()) if table else 0
-    likely = ("likely clean/sharing" if flag == "green" else
-              "likely redirect — expect no ad revenue" if flag == "yellow" else
-              "block risk — consider skipping or a very conservative cut" if flag == "red" else
-              "no prediction")
-    console.print(f"monetization note: {likely}" + (f" (n={n})" if n else ""))
-    console.print("[dim]manual check: search YouTube for long-form reactions to this exact title — "
-                  "surviving monetized uploads → tolerant rights holder; a removal graveyard → conservative cut.[/]")
-    proj.mark("preflight", flag=flag, studio=tc.studio)
+    likely = ("likely clean/sharing — full pipeline OK" if flag == "green" else
+              "mixed evidence — consider the conservative profile (clip cap 5-6 s, no extended scenes)" if flag == "yellow" else
+              "block risk — consider skipping or Patreon-only" if flag == "red" else
+              "no prediction — upload-and-learn")
+    console.print(f"monetization note: {likely}" + (f" (own uploads n={n})" if n else ""))
+    proj.mark("preflight", flag=flag, studio=tc.studio, survey=(sv or {}).get("verdict"))
     if flag == "red":
         raise typer.Exit(code=3)
 
