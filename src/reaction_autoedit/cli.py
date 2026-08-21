@@ -464,6 +464,19 @@ def _tvdb_clearlogo(title: str, year: int | None) -> Optional[str]:
         return None
 
 
+@app.command()
+def gui(
+    port: Optional[int] = typer.Option(None, help="port (default: a free one)"),
+    no_window: bool = typer.Option(False, "--no-window", help="serve only; open the URL yourself"),
+):
+    """Launch the GUI (local web app in a native window; browser fallback)."""
+    try:
+        from .gui.server import run as run_gui
+    except ImportError:
+        raise typer.BadParameter("GUI extra not installed: uv sync --extra gui")
+    run_gui(port=port, window=not no_window)
+
+
 @app.command("init-config")
 def init_config(out_dir: Path = typer.Option(Path("configs"))):
     """Write example reactor + title config files."""

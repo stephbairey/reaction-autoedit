@@ -1,0 +1,18 @@
+{
+  "title": "Fixture Film",
+  "year": 2000,
+  "studio": null,
+  "runtime_target_min": 55.0,
+  "clip_cap_s": 7.0,
+  "movie_frac": 0.75,
+  "withhold_climax": true,
+  "layout_min_s": 2.0,
+  "aspect_override": null,
+  "risk_flag": "unknown",
+  "show_title_card": true,
+  "silence_cut_s": null,
+  "trim_intro": false,
+  "trim_outro": false,
+  "title_card": null,
+  "clearlogo_url": null
+}
