@@ -8,6 +8,7 @@ jobs:
   build:
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         edition: [cpu, gpu]
     steps:
@@ -22,6 +23,7 @@ jobs:
           if [ "${{ matrix.edition }}" = "cpu" ]; then export UV_TORCH_BACKEND=cpu; fi
           uv sync --extra analysis --extra llm --extra gui
           uv pip install pyinstaller
+          uv pip uninstall typing || true   # obsolete backport (transitive); PyInstaller refuses to run with it
       - name: Fetch ffmpeg (gyan.dev release essentials)
         shell: pwsh
         run: |
