@@ -42,7 +42,7 @@ jobs:
           choco install innosetup -y --no-progress
           $env:RAE_VERSION = $env:GITHUB_REF_NAME -replace '^v',''
           if (-not $env:RAE_VERSION) { $env:RAE_VERSION = "0.0.0-dev" }
-          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" /DEdition=${{ matrix.edition }} packaging\installer.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DEdition=${{ matrix.edition }} packaging\installer.iss
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.edition }}
