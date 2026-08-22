@@ -4,6 +4,14 @@ import sys
 from pathlib import Path
 
 if getattr(sys, "frozen", False):
+    # windowed app: no console → sys.stdout/stderr are None and uvicorn's logger calls .isatty().
+    # Route everything to a log file next to the user data (also our only diagnostics channel).
+    _home = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ReactionAutoEdit"
+    _home.mkdir(parents=True, exist_ok=True)
+    if sys.stdout is None or sys.stderr is None:
+        _log = open(_home / "app.log", "a", buffering=1, encoding="utf-8", errors="replace")
+        sys.stdout = sys.stdout or _log
+        sys.stderr = sys.stderr or _log
     bundle = Path(sys._MEIPASS)  # type: ignore[attr-defined]
     ff = bundle / "ffmpeg"
     if (ff / "ffmpeg.exe").exists():

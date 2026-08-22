@@ -36,7 +36,9 @@ def run(port: int | None = None, window: bool = True) -> None:
 
     port = port or _free_port()
     app = create_app()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    # log_config=None: uvicorn's default logging config probes sys.stdout.isatty(), which explodes
+    # in windowed (no-console) builds; plain root logging is fine for a local app.
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", log_config=None)
     server = uvicorn.Server(config)
     url = f"http://127.0.0.1:{port}"
 
